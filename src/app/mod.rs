@@ -753,4 +753,35 @@ mod tests {
         ));
         assert_eq!(app.state.running_jobs_count(), 0);
     }
+
+    #[test]
+    fn running_task_in_tasks_panel_exposes_kill_in_footer_and_kills_with_k() {
+        let (mut app, _rx) = test_app();
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Tasks,
+            payload: MisePayload::Tasks(vec![MiseTask {
+                name: "long".into(),
+                ..Default::default()
+            }]),
+            log_entry: None,
+        }));
+
+        app.state.list_states.tasks.select(Some(1));
+        app.handle_event(key(KeyCode::Enter));
+        assert_eq!(app.state.running_jobs_count(), 1);
+
+        // Footer immediately prioritizes `K:kill` while the selected task is running
+        let hints = crate::app::keymap::footer_hints_for_state(&app.state);
+        assert_eq!(hints.first(), Some(&("K", "kill")));
+
+        // Pressing `K` directly from Tasks panel kills the running task without switching to panel 5
+        app.handle_event(key(KeyCode::Char('K')));
+        assert!(
+            app.state
+                .active_toast()
+                .is_some_and(|t| t.message.contains("Sent SIGTERM"))
+        );
+        app.runner.kill_all();
+    }
 }

@@ -1083,9 +1083,18 @@ pub fn apply_action(
             }
         }
         Action::JobKillSelected => {
-            let target_id = state
-                .selected_command_log_entry()
-                .and_then(|e| e.job_id)
+            let task_running_id = if state.active_panel == Panel::Tasks
+                && state.focus != FocusArea::Log
+            {
+                state
+                    .selected_task_job()
+                    .filter(|j| j.status.is_running())
+                    .map(|j| j.id)
+            } else {
+                None
+            };
+            let target_id = task_running_id
+                .or_else(|| state.selected_command_log_entry().and_then(|e| e.job_id))
                 .or(state.selected_job_id)
                 .or_else(|| {
                     state

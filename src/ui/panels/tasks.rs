@@ -594,12 +594,16 @@ fn build_output_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
         ),
     };
 
-    lines.push(Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(status_str, status_style),
         Span::styled("  ", theme::muted()),
         Span::styled(job.command_display.clone(), theme::primary()),
         Span::styled(format!("  [{dur_str}]"), theme::muted()),
-    ]));
+    ];
+    if job.status.is_running() {
+        header_spans.push(Span::styled("  (K:kill  T:tty)", theme::warning()));
+    }
+    lines.push(Line::from(header_spans));
     lines.push(section_divider(
         &format!(
             "OUTPUT ({} lines • {})",

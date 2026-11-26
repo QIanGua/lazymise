@@ -299,6 +299,14 @@ pub fn all_bindings() -> Vec<KeyBinding> {
             action: Action::TaskToggleAutoFollow,
             show_in_footer: false,
         },
+        KeyBinding {
+            key_display: "K",
+            label: "kill",
+            description: "Kill running background task process group",
+            scope: KeyScope::Panel(Panel::Tasks),
+            action: Action::JobKillSelected,
+            show_in_footer: false,
+        },
         // Panel 2: Tools
         KeyBinding {
             key_display: "a",
@@ -626,9 +634,19 @@ pub fn footer_hint_groups_for_state(state: &AppState) -> (Vec<FooterHint>, Vec<F
                     Action::TaskValidate,
                 ]);
             } else {
-                panel_actions.push(Action::TaskRunBackground);
-                if state.task_subview == TaskSubView::Output {
+                let is_running = state
+                    .selected_task_job()
+                    .is_some_and(|j| j.status.is_running());
+                if is_running {
+                    panel_actions.push(Action::JobKillSelected);
                     panel_actions.push(Action::TaskToggleAutoFollow);
+                    panel_actions.push(Action::TaskRunForeground);
+                } else {
+                    panel_actions.push(Action::TaskRunBackground);
+                    if state.task_subview == TaskSubView::Output {
+                        panel_actions.push(Action::TaskToggleAutoFollow);
+                    }
+                    panel_actions.push(Action::TaskRunForeground);
                 }
                 panel_actions.extend([
                     Action::TaskRunWithArgs,
@@ -1609,6 +1627,7 @@ pub fn resolve_key(key: KeyEvent, ctx: KeyContext, chord: &mut PendingChord) -> 
             KeyCode::Char('e') => Some(Action::TaskEditSource),
             KeyCode::Char('y') => Some(Action::TaskCopyCommand),
             KeyCode::Char('F') => Some(Action::TaskToggleAutoFollow),
+            KeyCode::Char('K') => Some(Action::JobKillSelected),
             _ => None,
         },
         Panel::Tools => match key.code {

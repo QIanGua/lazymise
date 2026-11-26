@@ -161,7 +161,18 @@ impl BackgroundRunner {
             }
 
             #[cfg(unix)]
-            cmd.process_group(0);
+            // Create a new session via `setsid()` so the child both becomes its own process-group
+            // leader (for `killpg`) and completely detaches from the parent's controlling `/dev/tty`.
+            // Without detaching, interactive programs that open `/dev/tty` receive SIGTTIN/SIGTTOU
+            // from the kernel and freeze indefinitely in Stopped state.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
 
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
@@ -852,6 +863,35 @@ mod tests {
         let (code, killed) = finished.expect("job ignoring SIGTERM must be reaped via SIGKILL");
         assert!(killed);
         assert_eq!(code, 128 + libc::SIGKILL);
+        assert_eq!(runner.running_count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_job_detaches_from_controlling_tty_and_fails_fast_on_dev_tty() {
+        let (tx, rx) = mpsc::channel();
+        let runner = BackgroundRunner::new(tx);
+        let id = runner.spawn_command(
+            std::env::temp_dir(),
+            "sh".to_string(),
+            vec!["-c".to_string(), "cat </dev/tty".to_string()],
+            Vec::new(),
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut finished_code = None;
+        while finished_code.is_none() && Instant::now() < deadline {
+            if let Ok(AppEvent::Runner(RunnerEvent::Finished {
+                job_id, exit_code, ..
+            })) = rx.recv_timeout(Duration::from_millis(50))
+                && job_id == id
+            {
+                finished_code = Some(exit_code);
+            }
+        }
+
+        let code = finished_code.expect("job touching /dev/tty must fail fast instead of hanging");
+        assert_ne!(code, 0);
         assert_eq!(runner.running_count(), 0);
     }
 }

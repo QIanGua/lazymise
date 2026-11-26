@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, IsTerminal};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -108,6 +108,11 @@ fn spawn_input_thread(tx: mpsc::Sender<AppEvent>) -> InputPauseHandle {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        anyhow::bail!(
+            "lazymise requires an interactive terminal (TTY). Run it directly in a terminal (or press `T` in lazymise for foreground TTY)."
+        );
+    }
     let workdir = match cli.dir {
         Some(d) => d,
         None => std::env::current_dir()?,
