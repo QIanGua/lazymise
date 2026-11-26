@@ -1,0 +1,25 @@
+# OS & Editor
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Local env & secrets
+.env
+.env.local
+*.local.toml
+
+# Virtual environments & dependencies
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Generated outputs & logs (keep directory placeholders)
+outputs/*
+!outputs/.gitkeep
+*.log

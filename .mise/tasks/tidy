@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+#MISE description="Read-only workspace hygiene check (root allowlist, naming, READMEs, large files)"
+set -euo pipefail
+
+ROOT="${MISE_PROJECT_ROOT:-$PWD}"
+cd "$ROOT"
+
+MAX_MB="${TIDY_MAX_MB:-5}"
+MAX_BYTES=$((MAX_MB * 1024 * 1024))
+
+# Default root allowlist (extend per-project via TIDY_ROOT_ALLOW="extra1 extra2")
+DEFAULT_ALLOW="AGENTS.md CLAUDE.md README.md LICENSE mise.toml mise.local.toml .gitignore .gitattributes .editorconfig .mise .git .jj .github src tests docs scripts apps packages experiments data outputs pyproject.toml uv.lock package.json pnpm-lock.yaml Cargo.toml Cargo.lock go.mod go.sum"
+EXTRA_ALLOW="${TIDY_ROOT_ALLOW:-}"
+ALLOW_LIST=" $DEFAULT_ALLOW $EXTRA_ALLOW "
+
+# Self-evident top-level dirs that do not require a boilerplate README.md
+STANDARD_DIRS=" src tests docs scripts apps packages experiments data outputs "
+
+ERRORS=0
+report() {
+  echo "tidy: $1"
+  ERRORS=$((ERRORS + 1))
+}
+
+# 1. Unexpected root entries outside allowlist
+while IFS= read -r entry; do
+  base="$(basename "$entry")"
+  if [[ "$ALLOW_LIST" != *" $base "* ]]; then
+    report "unexpected root entry: $base (add to home folder or TIDY_ROOT_ALLOW in mise.toml)"
+  fi
+done < <(find "$ROOT" -mindepth 1 -maxdepth 1)
+
+# 2. Non-standard top-level directories missing README.md
+while IFS= read -r dir; do
+  base="$(basename "$dir")"
+  [[ "$base" == .* ]] && continue
+  if [[ "$STANDARD_DIRS" != *" $base "* ]] && [ ! -f "$dir/README.md" ]; then
+    report "top-level directory missing README.md: $base/"
+  fi
+done < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d)
+
+# 3. Relative-word or copy-style names (excluding VCS, caches, outputs)
+BAD_NAME_RE='(^|[-_. ])(new|final|old|tmp|misc|latest|copy|bak)([-_. ]|$)|(^|[-_. ])(report|paper|draft|v)[0-9]+(\.[^.]+)?$|新|最终|副本'
+while IFS= read -r path; do
+  rel="${path#"$ROOT/"}"
+  base="$(basename "$path")"
+  if [[ "$base" =~ $BAD_NAME_RE ]]; then
+    report "time/copy-style name: $rel"
+  fi
+done < <(
+  find "$ROOT" \
+    \( -name .git -o -name .jj -o -name .mise -o -name .venv -o -name node_modules -o -name outputs -o -name __pycache__ \) -prune \
+    -o -print | tail -n +2
+)
+
+# 4. Oversized tracked/unignored files (> MAX_MB)
+while IFS= read -r file; do
+  size="$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo 0)"
+  if [ "$size" -gt "$MAX_BYTES" ]; then
+    rel="${file#"$ROOT/"}"
+    mb=$((size / 1024 / 1024))
+    report "oversized file (${mb}MB > ${MAX_MB}MB): $rel (ignore or move to outputs/)"
+  fi
+done < <(
+  find "$ROOT" \
+    \( -name .git -o -name .jj -o -name .venv -o -name node_modules -o -name outputs \) -prune \
+    -o -type f -print
+)
+
+if [ "$ERRORS" -gt 0 ]; then
+  echo "tidy: found $ERRORS issue(s)" >&2
+  exit 1
+fi
+
+echo "tidy: OK"

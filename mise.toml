@@ -1,0 +1,35 @@
+# lazymise — Software Project
+# Run `mise tasks` to list all available tasks.
+
+[tools]
+# Pin project runtimes here when needed, e.g.:
+# python = "3.12"
+# node = "24"
+# rust = "stable"
+
+[env]
+OUT_DIR = "{{config_root}}/outputs"
+# Extend root allowlist for `mise run tidy` if needed:
+# TIDY_ROOT_ALLOW = "Makefile"
+
+[tasks.dev]
+description = "Run local development entrypoint"
+run = "echo 'Configure dev command in mise.toml'"
+
+[tasks.test]
+description = "Run test suite"
+run = "echo 'Configure test command in mise.toml'"
+
+[tasks.build]
+description = "Build project artifacts"
+sources = ["src/**/*"]
+outputs = ["outputs/build.stamp"]
+run = """
+mkdir -p "$OUT_DIR"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$OUT_DIR/build.stamp"
+echo "Build complete -> $OUT_DIR/build.stamp"
+"""
+
+[tasks.check]
+description = "Run hygiene checks and tests"
+depends = ["tidy", "test"]
