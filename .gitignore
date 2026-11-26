@@ -9,15 +9,8 @@
 .env.local
 *.local.toml
 
-# Virtual environments & dependencies
-.venv/
-venv/
-node_modules/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
+# Rust build artifacts
+/target/
 
 # Generated outputs & logs (keep directory placeholders)
 outputs/*

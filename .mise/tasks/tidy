@@ -14,7 +14,7 @@ EXTRA_ALLOW="${TIDY_ROOT_ALLOW:-}"
 ALLOW_LIST=" $DEFAULT_ALLOW $EXTRA_ALLOW "
 
 # Self-evident top-level dirs that do not require a boilerplate README.md
-STANDARD_DIRS=" src tests docs scripts apps packages experiments data outputs "
+STANDARD_DIRS=" src tests docs scripts apps packages experiments data outputs target dist build node_modules "
 
 ERRORS=0
 report() {
@@ -49,7 +49,7 @@ while IFS= read -r path; do
   fi
 done < <(
   find "$ROOT" \
-    \( -name .git -o -name .jj -o -name .mise -o -name .venv -o -name node_modules -o -name outputs -o -name __pycache__ \) -prune \
+    \( -name .git -o -name .jj -o -name .mise -o -name .venv -o -name node_modules -o -name outputs -o -name target -o -name __pycache__ \) -prune \
     -o -print | tail -n +2
 )
 
@@ -63,7 +63,7 @@ while IFS= read -r file; do
   fi
 done < <(
   find "$ROOT" \
-    \( -name .git -o -name .jj -o -name .venv -o -name node_modules -o -name outputs \) -prune \
+    \( -name .git -o -name .jj -o -name .venv -o -name node_modules -o -name outputs -o -name target \) -prune \
     -o -type f -print
 )
 
