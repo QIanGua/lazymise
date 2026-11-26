@@ -10,6 +10,7 @@ TIDY_ROOT_ALLOW = "target STRATEGY.md README.zh-CN.md"
 
 [tasks.dev]
 description = "Run lazymise in debug mode"
+interactive = true
 run = "cargo run"
 
 [tasks.test]

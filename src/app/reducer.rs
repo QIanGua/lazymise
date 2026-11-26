@@ -1222,7 +1222,13 @@ pub fn launch_task_execution(
     force: bool,
 ) {
     state.last_task = Some(task_name.clone());
-    if !background {
+    let requires_tty = state
+        .task_info_cache
+        .get(&task_name)
+        .or_else(|| state.tasks.iter().find(|t| t.name == task_name))
+        .is_some_and(|t| t.interactive || t.raw);
+
+    if !background || requires_tty {
         state.pending_fg = Some(ForegroundRequest::RunTask {
             name: task_name,
             args: extra_args,

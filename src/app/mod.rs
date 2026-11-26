@@ -704,4 +704,53 @@ mod tests {
         assert!(app.state.jobs.values().any(|j| j.label == "mise install"));
         app.runner.kill_all();
     }
+
+    #[test]
+    fn interactive_and_raw_tasks_hand_off_to_foreground_tty() {
+        let (mut app, _rx) = test_app();
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Tasks,
+            payload: MisePayload::Tasks(vec![
+                MiseTask {
+                    name: "dev".into(),
+                    interactive: true,
+                    ..Default::default()
+                },
+                MiseTask {
+                    name: "repl".into(),
+                    raw: true,
+                    ..Default::default()
+                },
+            ]),
+            log_entry: None,
+        }));
+
+        // Pressing Enter or `f` on an `interactive = true` task must hand off to foreground TTY
+        app.state.list_states.tasks.select(Some(1));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.state.pending_fg,
+            Some(ForegroundRequest::RunTask { ref name, force: false, .. }) if name == "dev"
+        ));
+        assert_eq!(app.state.running_jobs_count(), 0);
+        app.state.pending_fg = None;
+
+        app.handle_event(key(KeyCode::Char('f')));
+        assert!(matches!(
+            app.state.pending_fg,
+            Some(ForegroundRequest::RunTask { ref name, force: true, .. }) if name == "dev"
+        ));
+        assert_eq!(app.state.running_jobs_count(), 0);
+        app.state.pending_fg = None;
+
+        // `raw = true` tasks also hand off to foreground TTY instead of hanging in background
+        app.state.list_states.tasks.select(Some(2));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.state.pending_fg,
+            Some(ForegroundRequest::RunTask { ref name, .. }) if name == "repl"
+        ));
+        assert_eq!(app.state.running_jobs_count(), 0);
+    }
 }
