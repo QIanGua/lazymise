@@ -6,7 +6,7 @@ rust = "stable"
 
 [env]
 OUT_DIR = "{{config_root}}/outputs"
-TIDY_ROOT_ALLOW = "target"
+TIDY_ROOT_ALLOW = "target STRATEGY.md"
 
 [tasks.dev]
 description = "Run lazymise in debug mode"
