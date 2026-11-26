@@ -14,9 +14,12 @@ use unicode_width::UnicodeWidthStr;
 use crate::action::{FocusArea, Panel, ScreenMode};
 use crate::app::keymap::footer_hint_groups_for_state;
 use crate::app::state::{AppState, Overlay};
+use crate::events::JobStatus;
 use crate::ui::layout::{LayoutMap, compute_accordion_slots, compute_layout};
 use crate::ui::theme::glyphs;
-use crate::ui::widgets::{render_toast_overlay, shorten_path, truncate_display};
+use crate::ui::widgets::{
+    format_duration_ms, render_toast_overlay, shorten_path, truncate_display,
+};
 
 /// Primary pure-rendering entrypoint for lazymise 2.0.
 /// Mutates ONLY `state.list_states`, `state.detail_scroll` viewport bounds, and `layout_map`.
@@ -145,16 +148,28 @@ fn render_header(
     let max_x = area.x.saturating_add(area.width);
 
     if is_narrow {
+        let status_span = build_header_job_status_span(state, true);
+        let status_w = status_span
+            .as_ref()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()) as u16)
+            .unwrap_or(0);
+        let left_limit = if status_w > 0 && area.width > status_w + 16 {
+            max_x.saturating_sub(status_w + 1)
+        } else {
+            max_x
+        };
+        let use_long_labels = left_limit.saturating_sub(area.x) >= 72;
+
         // Compact 1-5 panel switcher badges + focus indicator + ENV badge.
         for panel in Panel::ALL {
             let active = state.active_panel == panel;
-            let text = if area.width >= 66 {
+            let text = if use_long_labels {
                 format!("[{}:{}]", panel.number(), panel.short_title())
             } else {
                 format!("[{}]", panel.number())
             };
             let w = UnicodeWidthStr::width(text.as_str()) as u16;
-            if cursor_x.saturating_add(w) < max_x {
+            if cursor_x.saturating_add(w) < left_limit {
                 layout_map
                     .header_panels
                     .push((panel, Rect::new(cursor_x, area.y, w, 1)));
@@ -171,7 +186,7 @@ fn render_header(
             FocusArea::Log => "[LOG] ",
         };
         let fw = UnicodeWidthStr::width(focus_text) as u16;
-        if cursor_x.saturating_add(fw) < max_x {
+        if cursor_x.saturating_add(fw) < left_limit {
             left_spans.push(Span::styled(focus_text, theme::accent()));
             cursor_x = cursor_x.saturating_add(fw);
         }
@@ -179,7 +194,7 @@ fn render_header(
         let profile = state.profile.as_deref().unwrap_or("default");
         let env_badge = format!("E:[{profile}]");
         let ew = UnicodeWidthStr::width(env_badge.as_str()) as u16;
-        if cursor_x.saturating_add(ew) <= max_x {
+        if cursor_x.saturating_add(ew) <= left_limit {
             layout_map.header_profile = Rect::new(cursor_x, area.y, ew, 1);
             left_spans.push(Span::styled(
                 env_badge,
@@ -189,6 +204,18 @@ fn render_header(
                     theme::muted()
                 },
             ));
+            cursor_x = cursor_x.saturating_add(ew);
+        }
+
+        if let Some(span) = status_span {
+            let remaining = max_x.saturating_sub(cursor_x);
+            if remaining >= status_w {
+                let pad = remaining.saturating_sub(status_w) as usize;
+                if pad > 0 {
+                    left_spans.push(Span::raw(" ".repeat(pad)));
+                }
+                left_spans.push(span);
+            }
         }
 
         frame.render_widget(Paragraph::new(Line::from(left_spans)), area);
@@ -272,12 +299,8 @@ fn build_header_right_spans(state: &AppState) -> Vec<Span<'static>> {
         spans.push(Span::raw(" "));
     }
 
-    let running = state.running_jobs_count();
-    if running > 0 {
-        spans.push(Span::styled(
-            format!("[{} {running} running]", glyphs::RUNNING),
-            theme::success(),
-        ));
+    if let Some(status_span) = build_header_job_status_span(state, false) {
+        spans.push(status_span);
         spans.push(Span::raw(" "));
     }
 
@@ -291,6 +314,63 @@ fn build_header_right_spans(state: &AppState) -> Vec<Span<'static>> {
 
     spans.push(Span::styled("[+:zoom ?:help] ", theme::subtle()));
     spans
+}
+
+fn build_header_job_status_span(state: &AppState, compact: bool) -> Option<Span<'static>> {
+    let running_count = state.running_jobs_count();
+    let max_label = if compact { 12 } else { 20 };
+
+    if running_count > 0 {
+        let latest_running = state.jobs.values().rev().find(|j| j.status.is_running())?;
+        let raw_name = latest_running
+            .label
+            .strip_prefix("task:")
+            .unwrap_or(&latest_running.label);
+        let name = truncate_display(raw_name, max_label);
+        let elapsed = format_duration_ms(latest_running.started_at.elapsed().as_millis());
+        let text = if running_count > 1 {
+            format!(
+                "[{} {} +{} {}]",
+                state.spinner_char(),
+                name,
+                running_count - 1,
+                elapsed
+            )
+        } else {
+            format!("[{} {} {}]", state.spinner_char(), name, elapsed)
+        };
+        return Some(Span::styled(
+            text,
+            theme::accent().add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let latest = state.jobs.values().next_back()?;
+    let raw_name = latest
+        .label
+        .strip_prefix("task:")
+        .unwrap_or(&latest.label);
+    let name = truncate_display(raw_name, max_label);
+    match latest.status {
+        JobStatus::Success { duration_ms } => Some(Span::styled(
+            format!(
+                "[{} {} {}]",
+                glyphs::OK,
+                name,
+                format_duration_ms(duration_ms)
+            ),
+            theme::success(),
+        )),
+        JobStatus::Failed { code, .. } => Some(Span::styled(
+            format!("[{} {} exit {code}]", glyphs::FAIL, name),
+            theme::danger(),
+        )),
+        JobStatus::Killed { .. } => Some(Span::styled(
+            format!("[⊘ {name} killed]"),
+            theme::warning(),
+        )),
+        JobStatus::Running => None,
+    }
 }
 
 fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -911,5 +991,53 @@ mod tests {
 
         // Verify SystemTime formatting stability
         assert_eq!(widgets::format_hms(SystemTime::UNIX_EPOCH), "00:00:00");
+    }
+
+    #[test]
+    fn renders_top_right_header_job_status_for_running_and_completed_states() {
+        let mut state = sample_rich_state();
+
+        // 1. Running single job -> shows spinner + label in wide & narrow headers
+        let (wide_run, _) = render_to_string(&mut state, 140, 40);
+        let header_line = wide_run.lines().next().unwrap_or("");
+        assert!(header_line.contains("[⠋ check "));
+
+        let (narrow_run, _) = render_to_string(&mut state, 80, 24);
+        let narrow_header = narrow_run.lines().next().unwrap_or("");
+        assert!(narrow_header.contains("[⠋ check "));
+
+        // 2. Multiple running jobs -> shows "+1" counter
+        state.jobs.insert(
+            JobId(2),
+            JobRecord {
+                id: JobId(2),
+                label: "task:build".to_string(),
+                task_name: Some("build".to_string()),
+                command_display: "mise run build".to_string(),
+                pid: None,
+                started_at: Instant::now(),
+                status: JobStatus::Running,
+                lines: vec![],
+            },
+        );
+        let (wide_multi, _) = render_to_string(&mut state, 140, 40);
+        let multi_header = wide_multi.lines().next().unwrap_or("");
+        assert!(multi_header.contains("[⠋ build +1 "));
+
+        // 3. Completed success -> shows check mark + duration
+        state.jobs.get_mut(&JobId(1)).unwrap().status = JobStatus::Success { duration_ms: 820 };
+        state.jobs.get_mut(&JobId(2)).unwrap().status = JobStatus::Success { duration_ms: 1250 };
+        let (wide_ok, _) = render_to_string(&mut state, 140, 40);
+        let ok_header = wide_ok.lines().next().unwrap_or("");
+        assert!(ok_header.contains("[✓ build 1.25s]"));
+
+        // 4. Failed job -> shows failure glyph + exit code
+        state.jobs.get_mut(&JobId(2)).unwrap().status = JobStatus::Failed {
+            code: 2,
+            duration_ms: 300,
+        };
+        let (wide_fail, _) = render_to_string(&mut state, 140, 40);
+        let fail_header = wide_fail.lines().next().unwrap_or("");
+        assert!(fail_header.contains("[✗ build exit 2]"));
     }
 }

@@ -665,4 +665,43 @@ mod tests {
             panic!("expected Confirm overlay for active daemon stop");
         }
     }
+
+    #[test]
+    fn enter_runs_tasks_and_confirmed_commands_in_background_without_leaving_tui() {
+        let (mut app, _rx) = test_app();
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Tasks,
+            payload: MisePayload::Tasks(vec![MiseTask {
+                name: "build".into(),
+                ..Default::default()
+            }]),
+            log_entry: None,
+        }));
+
+        // Select "build" (row 1 after group header) and press Enter -> background job, no pending_fg
+        app.state.list_states.tasks.select(Some(1));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(app.state.pending_fg.is_none());
+        assert_eq!(app.state.running_jobs_count(), 1);
+        assert_eq!(app.state.task_subview, TaskSubView::Output);
+        app.runner.kill_all();
+
+        // Explicit `T` still allows interactive foreground TTY handoff
+        app.handle_event(key(KeyCode::Char('T')));
+        assert!(matches!(
+            app.state.pending_fg,
+            Some(ForegroundRequest::RunTask { ref name, .. }) if name == "build"
+        ));
+        app.state.pending_fg = None;
+
+        // Confirming `mise install` on Tools panel runs in background (no pending_fg)
+        app.handle_event(key(KeyCode::Char('2')));
+        app.handle_event(key(KeyCode::Char('i')));
+        assert!(matches!(app.state.overlay, Overlay::Confirm { .. }));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(app.state.pending_fg.is_none());
+        assert!(app.state.jobs.values().any(|j| j.label == "mise install"));
+        app.runner.kill_all();
+    }
 }

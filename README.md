@@ -33,7 +33,7 @@ On wide terminals (`>= 96` columns), `lazymise` renders a 5-panel workbench with
 ││ 13:20:04  ⠋ RUN  [USR] mise run check              [1.2s] (K:kill  Enter:inspect)  ││
 ││ 13:19:50  ✓ 0    [INT] mise outdated --json        [0.37s]                         ││
 │└────────────────────────────────────────────────────────────────────────────────────┘│
-│ Enter:run  b:bg  A:args  w:watch  x:menu  /:filter  E:env  ::palette  ?:help  q:quit │
+│ Enter:run  A:args  f:force  w:watch │ x:menu  /:filter  E:env  ::palette  ?:help  q:quit │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -53,7 +53,7 @@ On wide terminals (`>= 96` columns), `lazymise` renders a 5-panel workbench with
 - **`MISE_ENV` Profile Switching (`E`)**: Auto-discovers workspace `mise.<env>.toml` profiles (or accepts comma-separated profiles like `dev,local`), displays an interactive `ENV:[profile]` header badge, and injects `-E <profile>` consistently across all queries and commands.
 - **Instant Registry Search & Install (`2` → `a`)**: Fuzzy-search `mise`'s 1,079+ tool registry in memory, pick a version from asynchronous `mise ls-remote`, choose project or global scope, and confirm the exact `mise use` command before running.
 - **Supply-Chain Security & Lockfiles**: Run OSV.dev CVE audits (`mise audit --json`), upgrade vulnerable tools (`mise upgrade --vulnerable`), inspect `mise lock --dry-run` diffs, and update `mise.lock` with explicit confirmation.
-- **Task Workflows & Monorepo Support**: Foreground TTY handoff (with RAII terminal restoration and `$EDITOR` shell-word parsing), concurrent background jobs, `#USAGE` (`usage_spec`) argument forms (`A`), `--force` runs (`f`), `mise watch` (`w` with `watchexec` detection), `mise tasks validate` (`v`), hidden tasks (`H`), and monorepo `--all` discovery (`M`).
+- **Task Workflows & Monorepo Support**: Non-blocking background execution by default on `Enter` (with live top-right header status badges and streaming ANSI output), optional foreground interactive TTY handoff (`T`, with RAII terminal restoration and `$EDITOR` shell-word parsing), `#USAGE` (`usage_spec`) argument forms (`A`), `--force` runs (`f`), background `mise watch` (`w` with `watchexec` detection), `mise tasks validate` (`v`), hidden tasks (`H`), and monorepo `--all` discovery (`M`).
 - **Environment Governance**: Combines `mise env --redacted --json` with heuristic secret detection; masks sensitive values by default, reveals with `S` (auto-re-masks after 30s), warns when copying secrets, and edits via `mise set` / `mise unset`.
 - **Config Governance & Scaffolding**: Inline `mise config explain` diagnostics, structured `mise doctor` dashboard, searchable `mise settings`, experimental `[daemons]` & `[deps]` management, plus a unified `g` Generate & Scaffold modal covering all 7 official `mise generate` targets and custom `$MISE_TEMPLATES_DIR` / `~/.config/mise/templates` templates.
 - **Multi-Job Process Management & ANSI Rendering**: Unique `JobId` isolation, Unix process-group termination (`SIGTERM` → `SIGKILL` with cleanup on exit and quit-confirmation guard), `\r` progress overwrite, and zero-dependency 16/256/TrueColor ANSI SGR rendering.
@@ -122,8 +122,8 @@ All keybindings are defined in a single registry ([`src/app/keymap.rs`](src/app/
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Run task in foreground TTY (or fold group; auto-opens args form if required) |
-| `b` | Run task in background with live ANSI output |
+| `Enter` | Run task in background with live ANSI output & top-right status (or fold group; auto-opens args form if required) |
+| `T` | Run task in foreground interactive TTY |
 | `A` | Run task with arguments / `#USAGE` flags form |
 | `f` | Run task with `--force` (bypass `sources`/`outputs` cache) |
 | `w` | Watch task via `mise watch -t <task>` |

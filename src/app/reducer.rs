@@ -412,7 +412,7 @@ pub fn apply_action(
         }
         Action::RerunLastTask => {
             if let Some(name) = state.last_task.clone() {
-                launch_task_execution(state, runner, name, Vec::new(), false, false);
+                launch_task_execution(state, runner, name, Vec::new(), true, false);
             } else {
                 state.push_toast(ToastLevel::Warning, "No previous task to re-run");
             }
@@ -445,8 +445,28 @@ pub fn apply_action(
             }
         }
         Action::TaskRunBackground => {
-            if let Some(task) = state.selected_task().cloned() {
-                launch_task_execution(state, runner, task.name, Vec::new(), true, false);
+            let Some(idx) = state.list_states.tasks.selected() else {
+                return;
+            };
+            match state.task_rows.get(idx).cloned() {
+                Some(TaskRow::Group { .. }) => toggle_current_task_group(state),
+                Some(TaskRow::Task { task, .. }) => {
+                    let info = state
+                        .task_info_cache
+                        .get(&task.name)
+                        .cloned()
+                        .unwrap_or(*task);
+                    if info
+                        .usage_spec
+                        .as_ref()
+                        .is_some_and(|u| u.has_required_inputs())
+                    {
+                        open_task_args_form(state, &info, true, false, loader);
+                    } else {
+                        launch_task_execution(state, runner, info.name, Vec::new(), true, false);
+                    }
+                }
+                None => {}
             }
         }
         Action::TaskRunWithArgs => {
@@ -456,7 +476,7 @@ pub fn apply_action(
                     .get(&task.name)
                     .cloned()
                     .unwrap_or(task);
-                open_task_args_form(state, &info, false, false, loader);
+                open_task_args_form(state, &info, true, false, loader);
             }
         }
         Action::TaskRunForce => {
@@ -473,7 +493,20 @@ pub fn apply_action(
                     );
                 } else {
                     state.last_task = Some(task.name.clone());
-                    state.pending_fg = Some(ForegroundRequest::WatchTask { name: task.name });
+                    let job_id = spawn_user_mise_job(
+                        state,
+                        runner,
+                        vec!["watch".into(), "-t".into(), task.name.clone()],
+                        format!("watch:{}", task.name),
+                        Some(task.name.clone()),
+                    );
+                    state.latest_task_job.insert(task.name.clone(), job_id);
+                    state.task_subview = TaskSubView::Output;
+                    state.detail_scroll.scroll_top();
+                    state.push_toast(
+                        ToastLevel::Info,
+                        format!("Watching `{}` in background (job #{})", task.name, job_id.0),
+                    );
                 }
             }
         }
@@ -567,7 +600,7 @@ pub fn apply_action(
                 command_preview: preview,
                 action: ConfirmAction::MiseCommand {
                     args,
-                    foreground: true,
+                    foreground: false,
                     reload_after: true,
                     label: "mise install".into(),
                 },
@@ -595,7 +628,7 @@ pub fn apply_action(
                     command_preview: preview,
                     action: ConfirmAction::MiseCommand {
                         args,
-                        foreground: true,
+                        foreground: false,
                         reload_after: true,
                         label: format!("upgrade:{name}"),
                     },
@@ -614,7 +647,7 @@ pub fn apply_action(
                 command_preview: preview,
                 action: ConfirmAction::MiseCommand {
                     args,
-                    foreground: true,
+                    foreground: false,
                     reload_after: true,
                     label: "mise upgrade".into(),
                 },
@@ -632,7 +665,7 @@ pub fn apply_action(
                 command_preview: preview,
                 action: ConfirmAction::MiseCommand {
                     args,
-                    foreground: true,
+                    foreground: false,
                     reload_after: true,
                     label: "upgrade --vulnerable".into(),
                 },
@@ -654,7 +687,7 @@ pub fn apply_action(
                         command_preview: preview,
                         action: ConfirmAction::MiseCommand {
                             args,
-                            foreground: true,
+                            foreground: false,
                             reload_after: true,
                             label: format!("uninstall:{spec}"),
                         },
@@ -676,7 +709,7 @@ pub fn apply_action(
                         command_preview: preview,
                         action: ConfirmAction::MiseCommand {
                             args,
-                            foreground: true,
+                            foreground: false,
                             reload_after: true,
                             label: format!("unuse:{name}"),
                         },
@@ -696,7 +729,7 @@ pub fn apply_action(
                 command_preview: preview,
                 action: ConfirmAction::MiseCommand {
                     args,
-                    foreground: true,
+                    foreground: false,
                     reload_after: true,
                     label: "mise prune".into(),
                 },
@@ -724,7 +757,7 @@ pub fn apply_action(
                 command_preview: preview,
                 action: ConfirmAction::MiseCommand {
                     args,
-                    foreground: true,
+                    foreground: false,
                     reload_after: true,
                     label: "mise lock".into(),
                 },
@@ -1033,7 +1066,7 @@ pub fn apply_action(
                 command_preview: preview,
                 action: ConfirmAction::MiseCommand {
                     args,
-                    foreground: true,
+                    foreground: false,
                     reload_after: true,
                     label: "mise deps".into(),
                 },
@@ -1162,12 +1195,18 @@ pub fn execute_confirmed(
             }
         }
         ConfirmAction::ScaffoldTemplate { template, name } => {
-            state.pending_fg = Some(ForegroundRequest::RunMiseCommand {
-                args: vec!["run".into(), "new".into(), template.clone(), name.clone()],
-                wait_for_enter: true,
-                reload_after: false,
-                label: format!("scaffold:{template}/{name}"),
-            });
+            let label = format!("scaffold:{template}/{name}");
+            spawn_user_mise_job(
+                state,
+                runner,
+                vec!["run".into(), "new".into(), template, name],
+                label.clone(),
+                None,
+            );
+            state.push_toast(
+                ToastLevel::Info,
+                format!("Running `{label}` in background..."),
+            );
         }
     }
     state.dirty = true;
@@ -1465,7 +1504,7 @@ pub fn apply_runner_event(state: &mut AppState, ev: RunnerEvent, loader: &MiseLo
                 JobStatus::Success { .. } => {
                     state.push_toast(ToastLevel::Success, format!("{label} OK ({secs:.2}s)"));
                     if is_mutation {
-                        trigger_hot_reload(state, loader, false);
+                        trigger_hot_reload(state, loader, true);
                     }
                 }
                 JobStatus::Killed { .. } => {

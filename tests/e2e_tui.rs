@@ -19,7 +19,7 @@ use lazymise::action::{
 };
 use lazymise::app::keymap::PendingChord;
 use lazymise::app::state::{Overlay, RegistryStep};
-use lazymise::app::{App, ForegroundRequest};
+use lazymise::app::App;
 use lazymise::cli::Cli;
 use lazymise::events::{
     AppEvent, CommandLogEntry, CommandSource, JobId, JobOutputLine, JobRecord, JobStatus,
@@ -689,20 +689,20 @@ fn e2e_overlays_help_context_palette_registry_args_env_and_generate() {
         app.state.active_toast().map(|t| t.level),
         Some(ToastLevel::Warning)
     );
-    // Fill required arg `env = prod`, toggle `--force`, submit -> pending_fg
+    // Fill required arg `env = prod`, toggle `--force`, submit -> runs in background without leaving TUI
     send_str(&mut app, "prod");
     app.handle_event(ctrl('f'));
     app.handle_event(key(KeyCode::Enter));
     assert!(matches!(app.state.overlay, Overlay::None));
-    assert!(matches!(
-        app.state.pending_fg,
-        Some(ForegroundRequest::RunTask {
-            ref name,
-            ref args,
-            force: true,
-        }) if name == "deploy" && args == &vec!["prod".to_string()]
-    ));
-    app.state.pending_fg = None;
+    assert!(app.state.pending_fg.is_none());
+    assert!(app.state.jobs.values().any(|j| {
+        j.task_name.as_deref() == Some("deploy")
+            && j.command_display.contains("run --force deploy -- prod")
+    }));
+    let running_frame = render_frame(&mut app, 140, 40);
+    let top_header = running_frame.lines().next().unwrap_or("");
+    assert!(top_header.contains("[⠋ deploy "));
+    app.runner.kill_all();
 
     // 7. Config `g` Generate & Templates modal (official target + custom template name input)
     app.handle_event(key(KeyCode::Char('4')));

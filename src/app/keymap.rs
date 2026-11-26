@@ -206,18 +206,18 @@ pub fn all_bindings() -> Vec<KeyBinding> {
         KeyBinding {
             key_display: "Enter",
             label: "run",
-            description: "Run task in foreground TTY (or fold group)",
-            scope: KeyScope::Panel(Panel::Tasks),
-            action: Action::TaskRunForeground,
-            show_in_footer: true,
-        },
-        KeyBinding {
-            key_display: "b",
-            label: "bg",
-            description: "Run task in background with live ANSI output",
+            description: "Run task in background with live ANSI output (or fold group)",
             scope: KeyScope::Panel(Panel::Tasks),
             action: Action::TaskRunBackground,
             show_in_footer: true,
+        },
+        KeyBinding {
+            key_display: "T",
+            label: "tty",
+            description: "Run task in foreground interactive TTY",
+            scope: KeyScope::Panel(Panel::Tasks),
+            action: Action::TaskRunForeground,
+            show_in_footer: false,
         },
         KeyBinding {
             key_display: "A",
@@ -626,7 +626,6 @@ pub fn footer_hint_groups_for_state(state: &AppState) -> (Vec<FooterHint>, Vec<F
                     Action::TaskValidate,
                 ]);
             } else {
-                panel_actions.push(Action::TaskRunForeground);
                 panel_actions.push(Action::TaskRunBackground);
                 if state.task_subview == TaskSubView::Output {
                     panel_actions.push(Action::TaskToggleAutoFollow);
@@ -900,18 +899,18 @@ pub fn context_menu_items(state: &AppState) -> Vec<MenuItem> {
             vec![
                 MenuItem {
                     key_hint: "Enter".into(),
-                    label: "Run in foreground TTY".into(),
-                    description: "Suspend TUI and run interactively".into(),
-                    action: Action::TaskRunForeground,
+                    label: "Run task (background)".into(),
+                    description: "Run in background with live ANSI output & top-right status".into(),
+                    action: Action::TaskRunBackground,
                     command_preview: Some(
                         state.format_mise_command(&["run".into(), task_name.clone()]),
                     ),
                 },
                 MenuItem {
-                    key_hint: "b".into(),
-                    label: "Run in background".into(),
-                    description: "Stream live ANSI output in Output sub-view".into(),
-                    action: Action::TaskRunBackground,
+                    key_hint: "T".into(),
+                    label: "Run in foreground TTY".into(),
+                    description: "Suspend TUI and run interactively in terminal".into(),
+                    action: Action::TaskRunForeground,
                     command_preview: Some(
                         state.format_mise_command(&["run".into(), task_name.clone()]),
                     ),
@@ -1598,8 +1597,8 @@ pub fn resolve_key(key: KeyEvent, ctx: KeyContext, chord: &mut PendingChord) -> 
     // Panel-specific bindings
     match eff {
         Panel::Tasks => match key.code {
-            KeyCode::Enter => Some(Action::TaskRunForeground),
-            KeyCode::Char('b') => Some(Action::TaskRunBackground),
+            KeyCode::Enter | KeyCode::Char('b') => Some(Action::TaskRunBackground),
+            KeyCode::Char('T') => Some(Action::TaskRunForeground),
             KeyCode::Char('A') => Some(Action::TaskRunWithArgs),
             KeyCode::Char('f') => Some(Action::TaskRunForce),
             KeyCode::Char('w') => Some(Action::TaskWatch),

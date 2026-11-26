@@ -22,7 +22,7 @@ run = "cargo clippy --all-targets -- -D warnings"
 
 [tasks.build]
 description = "Build release binary"
-sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+sources = ["src/**/*.rs", "Cargo.lock", "Cargo.toml"]
 outputs = ["target/release/lazymise"]
 run = "cargo build --release"
 

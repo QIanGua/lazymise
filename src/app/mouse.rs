@@ -166,7 +166,7 @@ fn handle_left_click(
                     crate::app::reducer::ensure_active_data_loaded(state, loader);
                     if is_double_click {
                         let dbl_action = match panel {
-                            Panel::Tasks => Action::TaskRunForeground,
+                            Panel::Tasks => Action::TaskRunBackground,
                             Panel::Tools => Action::ToolUpgradeSelected,
                             Panel::Env => Action::EnvToggleReveal,
                             Panel::Config => Action::ConfigEditSelected,

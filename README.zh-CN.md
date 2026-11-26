@@ -33,7 +33,7 @@
 ││ 13:20:04  ⠋ RUN  [USR] mise run check              [1.2s] (K:kill  Enter:inspect)  ││
 ││ 13:19:50  ✓ 0    [INT] mise outdated --json        [0.37s]                         ││
 │└────────────────────────────────────────────────────────────────────────────────────┘│
-│ Enter:run  b:bg  A:args  w:watch │ x:menu  /:filter  E:env  ::palette  ?:help  q:quit│
+│ Enter:run  A:args  f:force  w:watch │ x:menu  /:filter  E:env  ::palette  ?:help  q:quit │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -53,7 +53,7 @@
 - **`MISE_ENV` 配置档切换（`E`）**：自动发现工作区中的 `mise.<env>.toml` 配置档（支持逗号组合如 `dev,local`），顶部实时展示 `ENV:[profile]` 徽章，并在所有查询与执行命令中一致注入 `-E <profile>`。
 - **内置工具注册表搜索与安装（`2` → `a`）**：在内存中模糊搜索 `mise` 1,079+ 官方工具，异步加载 `mise ls-remote` 版本列表，选择项目或全局作用域并在确认精确 `mise use` 命令后执行。
 - **供应链安全与锁文件治理**：集成 OSV.dev 漏洞审计（`mise audit --json`）、一键升级受影响工具（`mise upgrade --vulnerable`）、预览 `mise lock --dry-run` 差异并在确认后更新 `mise.lock`。
-- **任务工作流与 Monorepo 支持**：前台 TTY 移交（带 RAII 终端恢复与 `$EDITOR` shell 词法解析）、多后台并发作业、`#USAGE`（`usage_spec`）参数表单（`A`）、`--force` 强制执行（`f`）、`mise watch`（`w`，自动检测 `watchexec`）、`mise tasks validate`（`v`）、隐藏任务切换（`H`）及 Monorepo `--all` 发现（`M`）。
+- **任务工作流与 Monorepo 支持**：按 `Enter` 默认在后台非阻塞执行（保持在 TUI 界面内，右上角实时展示执行状态并流式渲染 ANSI 输出），亦支持按 `T` 移交前台交互式 TTY（带 RAII 终端恢复与 `$EDITOR` shell 词法解析）、`#USAGE`（`usage_spec`）参数表单（`A`）、`--force` 强制执行（`f`）、后台 `mise watch`（`w`，自动检测 `watchexec`）、`mise tasks validate`（`v`）、隐藏任务切换（`H`）及 Monorepo `--all` 发现（`M`）。
 - **环境变量治理**：合并 `mise env --redacted --json` 与启发式敏感词检测；默认脱敏隐藏敏感值，按 `S` 临时明文显示（30 秒后自动重新隐藏），复制敏感值前发出提示，并支持 `mise set` / `mise unset` 增删改。
 - **配置治理与脚手架生成**：内联展示 `mise config explain` 诊断、结构化 `mise doctor` 仪表盘、可搜索的 `mise settings`、实验性 `[daemons]` 与 `[deps]` 管理，以及统一的 `g` 脚手架生成弹窗（覆盖全部 7 个官方 `mise generate` 目标与 `$MISE_TEMPLATES_DIR` / `~/.config/mise/templates` 自定义模板）。
 - **多作业进程组管理与 ANSI 渲染**：独立 `JobId` 隔离、Unix 进程组级终止（`SIGTERM` → `SIGKILL`，退出时自动清理并防误关运行中作业）、`\r` 进度条原地覆写，以及零依赖 16/256/TrueColor ANSI SGR 渲染。
@@ -122,8 +122,8 @@ lazymise --tab jobs               # 启动后聚焦 Command Log & Jobs
 
 | 快捷键 | 操作 |
 | --- | --- |
-| `Enter` | 前台 TTY 运行任务（或在分组头上折叠/展开；存在必填参数时自动弹出表单） |
-| `b` | 后台运行任务并实时查看 ANSI 输出 |
+| `Enter` | 后台运行任务并实时查看 ANSI 输出与右上角状态（或在分组头上折叠/展开；存在必填参数时自动弹出表单） |
+| `T` | 在前台交互式 TTY 中运行任务 |
 | `A` | 带参数 / `#USAGE` 标志表单运行任务 |
 | `f` | 使用 `--force` 运行任务（跳过 `sources`/`outputs` 缓存） |
 | `w` | 通过 `mise watch -t <task>` 监听重跑 |

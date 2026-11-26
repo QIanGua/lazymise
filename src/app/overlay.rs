@@ -606,7 +606,7 @@ pub fn handle_overlay_key(
                         command_preview: cmd_preview,
                         action: ConfirmAction::MiseCommand {
                             args,
-                            foreground: true,
+                            foreground: false,
                             reload_after: true,
                             label: format!("use:{spec}"),
                         },
@@ -836,7 +836,7 @@ pub fn handle_overlay_key(
                                         command_preview: preview,
                                         action: ConfirmAction::MiseCommand {
                                             args,
-                                            foreground: true,
+                                            foreground: false,
                                             reload_after: true,
                                             label: item.label,
                                         },

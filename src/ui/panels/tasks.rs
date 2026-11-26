@@ -564,7 +564,7 @@ fn build_output_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
         return empty_state_lines(
             &format!("No Background Output for `{}`", task.name),
             "This task has not been run in the background during this session.",
-            Some("Press `b` to run in background (live ANSI stream), or `Enter` for foreground TTY."),
+            Some("Press `Enter` to run in background (live ANSI stream), or `T` for foreground TTY."),
         );
     };
 
