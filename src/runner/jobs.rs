@@ -152,6 +152,7 @@ impl BackgroundRunner {
             let mut cmd = Command::new(&program);
             cmd.args(&args)
                 .current_dir(&workdir)
+                .env("LAZYMISE_NESTED", "1")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());

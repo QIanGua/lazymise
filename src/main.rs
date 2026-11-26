@@ -108,6 +108,13 @@ fn spawn_input_thread(tx: mpsc::Sender<AppEvent>) -> InputPauseHandle {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if std::env::var_os("LAZYMISE_NESTED")
+        .is_some_and(|v| !v.is_empty() && v != "0")
+    {
+        anyhow::bail!(
+            "lazymise is already running in this session; nested lazymise sessions are disabled."
+        );
+    }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         anyhow::bail!(
             "lazymise requires an interactive terminal (TTY). Run it directly in a terminal (or press `T` in lazymise for foreground TTY)."

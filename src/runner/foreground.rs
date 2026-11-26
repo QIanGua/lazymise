@@ -234,6 +234,7 @@ pub fn run_foreground(
     let status = Command::new(program)
         .args(args)
         .current_dir(workdir)
+        .env("LAZYMISE_NESTED", "1")
         .status()
         .with_context(|| format!("failed to run `{program}`"))?;
     let duration_ms = start.elapsed().as_millis();
