@@ -989,8 +989,11 @@ mod tests {
             let _ = render_to_string(&mut state, 40, 10);
         }
 
-        // Verify SystemTime formatting stability
-        assert_eq!(widgets::format_hms(SystemTime::UNIX_EPOCH), "00:00:00");
+        // Verify SystemTime formatting produces valid HH:MM:SS local timestamp
+        let hms = widgets::format_hms(SystemTime::UNIX_EPOCH);
+        assert_eq!(hms.len(), 8);
+        assert_eq!(&hms[2..3], ":");
+        assert_eq!(&hms[5..6], ":");
     }
 
     #[test]

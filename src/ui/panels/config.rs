@@ -210,9 +210,13 @@ pub fn render_sidebar(
                 badges_w += s.len();
                 badges.push(Span::styled(s, theme::danger().add_modifier(Modifier::BOLD)));
             } else if row.trusted == Some(true) && inner_w > 34 {
-                let s = " [TRUSTED]";
+                let (s, style) = if row.trust_status == "trusted (global)" {
+                    (" [GLOBAL]", theme::accent())
+                } else {
+                    (" [TRUSTED]", theme::success())
+                };
                 badges_w += s.len();
-                badges.push(Span::styled(s, theme::success()));
+                badges.push(Span::styled(s, style));
             }
             if row.explain_warnings > 0 {
                 let s = format!(" {}{}", glyphs::WARN, row.explain_warnings);

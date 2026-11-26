@@ -457,12 +457,25 @@ pub fn format_duration_ms(ms: u128) -> String {
     }
 }
 
-/// Format a `SystemTime` as `HH:MM:SS` (UTC) without external dependencies or unsafe FFI.
+/// Format a `SystemTime` as local `HH:MM:SS` (using thread-safe `localtime_r` on Unix,
+/// falling back to UTC on non-Unix platforms).
 pub fn format_hms(ts: SystemTime) -> String {
     let secs = ts
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+
+    #[cfg(unix)]
+    {
+        if let Ok(raw_time) = libc::time_t::try_from(secs) {
+            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+            let ptr = unsafe { libc::localtime_r(&raw_time, &mut tm) };
+            if !ptr.is_null() {
+                return format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec);
+            }
+        }
+    }
+
     let day_secs = secs % 86_400;
     let h = day_secs / 3_600;
     let m = (day_secs % 3_600) / 60;

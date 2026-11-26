@@ -96,7 +96,7 @@ impl ConfigViewModel {
                 continue;
             };
 
-            let trust = self.resolve_trust_for(&entry.path);
+            let (trusted, trust_status) = self.resolve_trust_status(&entry.path);
             let explain_warnings = self
                 .explain_items_for_internal(&entry.path, primary_path_norm.as_deref())
                 .iter()
@@ -106,10 +106,8 @@ impl ConfigViewModel {
             scored_rows.push((
                 ConfigFileRow {
                     entry: entry.clone(),
-                    trusted: trust.map(|t| t.trusted),
-                    trust_status: trust
-                        .map(|t| t.raw_status.clone())
-                        .unwrap_or_else(|| "unknown".to_string()),
+                    trusted,
+                    trust_status,
                     explain_warnings,
                     match_indices,
                 },
@@ -289,8 +287,8 @@ impl ConfigViewModel {
             .map(|f| normalize_path(Path::new(&f.path)));
 
         for entry in &self.raw_files {
-            if let Some(trust) = self.resolve_trust_for(&entry.path) {
-                if trust.trusted {
+            if let (Some(trusted), _) = self.resolve_trust_status(&entry.path) {
+                if trusted {
                     trusted_files += 1;
                 } else {
                     untrusted_files += 1;
@@ -359,6 +357,52 @@ impl ConfigViewModel {
 
         best.map(|(_, t)| t)
     }
+
+    /// Resolve effective trust state for `config_path`: explicit `mise trust --show` entries take
+    /// precedence, while files inside mise's global config directories (`~/.config/mise`,
+    /// `$MISE_CONFIG_DIR`, `$XDG_CONFIG_HOME/mise`, `/etc/mise`) are implicitly trusted by mise.
+    fn resolve_trust_status(&self, config_path: &str) -> (Option<bool>, String) {
+        if let Some(trust) = self.resolve_trust_for(config_path) {
+            return (Some(trust.trusted), trust.raw_status.clone());
+        }
+        let norm = normalize_path(Path::new(config_path));
+        if is_global_mise_config_path(&norm) {
+            return (Some(true), "trusted (global)".to_string());
+        }
+        (None, "unknown".to_string())
+    }
+}
+
+/// Returns `true` if `norm_path` resides in mise's implicitly-trusted global config locations.
+pub fn is_global_mise_config_path(norm_path: &Path) -> bool {
+    if let Ok(global_file) = std::env::var("MISE_GLOBAL_CONFIG_FILE")
+        && !global_file.trim().is_empty()
+        && normalize_path(Path::new(global_file.trim())) == norm_path
+    {
+        return true;
+    }
+
+    let mut global_dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(cfg_dir) = std::env::var("MISE_CONFIG_DIR")
+        && !cfg_dir.trim().is_empty()
+    {
+        global_dirs.push(normalize_path(Path::new(cfg_dir.trim())));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.trim().is_empty()
+    {
+        global_dirs.push(normalize_path(&PathBuf::from(xdg.trim()).join("mise")));
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.trim().is_empty()
+    {
+        global_dirs.push(normalize_path(
+            &PathBuf::from(home.trim()).join(".config").join("mise"),
+        ));
+    }
+    global_dirs.push(PathBuf::from("/etc/mise"));
+
+    global_dirs.iter().any(|dir| norm_path.starts_with(dir))
 }
 
 /// Expand leading `~`, canonicalize when path exists, and lexically normalize components.
@@ -425,6 +469,7 @@ mod tests {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".to_string());
         let repo_file = format!("{home}/work/app/mise.toml");
         let global_file = format!("{home}/.config/mise/config.toml");
+        let other_file = "/tmp/unmatched-project/mise.toml".to_string();
 
         let mut vm = ConfigViewModel {
             raw_files: vec![
@@ -437,6 +482,11 @@ mod tests {
                     path: global_file.clone(),
                     tools: vec!["node".to_string()],
                     is_override: true,
+                },
+                ConfigFileEntry {
+                    path: other_file,
+                    tools: vec![],
+                    is_override: false,
                 },
             ],
             trust_entries: vec![
@@ -455,13 +505,16 @@ mod tests {
         };
 
         vm.rebuild("");
-        assert_eq!(vm.rows.len(), 2);
+        assert_eq!(vm.rows.len(), 3);
         // More specific ~/work/app overrides ~/work
         assert_eq!(vm.rows[0].trusted, Some(true));
         assert_eq!(vm.rows[0].trust_status, "trusted");
-        // Unmatched config reports unknown
-        assert_eq!(vm.rows[1].trusted, None);
-        assert_eq!(vm.rows[1].trust_status, "unknown");
+        // Global ~/.config/mise/* is implicitly trusted by mise
+        assert_eq!(vm.rows[1].trusted, Some(true));
+        assert_eq!(vm.rows[1].trust_status, "trusted (global)");
+        // Unmatched non-global config reports unknown
+        assert_eq!(vm.rows[2].trusted, None);
+        assert_eq!(vm.rows[2].trust_status, "unknown");
     }
 
     #[test]
