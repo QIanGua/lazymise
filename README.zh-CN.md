@@ -1,10 +1,24 @@
-# lazymise
+<p align="center">
+  <img src="docs/assets/logo.png" alt="lazymise logo" width="680" />
+</p>
+
+<h1 align="center">lazymise</h1>
 
 <p align="center">
   <a href="README.md">English</a> | <strong>简体中文</strong>
 </p>
 
 一款 Vim 优先、受 `lazygit` 启发的 [`mise`](https://mise.jdx.dev/) 终端工作台 —— 在一个非阻塞 TUI 中统一管理 **Tasks（任务）**、**Tools（工具）**、**Env（环境变量）**、**Config & Health（配置与健康检查）** 与 **Command Log & Jobs（命令日志与后台作业）**，深度对齐 `mise` 官方演进路线。
+
+## 界面截图
+
+### Tasks 工作台与实时命令日志
+
+![lazymise Tasks 工作台](docs/assets/screenshot-tasks.png)
+
+### Tools 管理、精简元数据与上下文动态底栏
+
+![lazymise Tools 管理](docs/assets/screenshot-tools.png)
 
 ## 界面布局概览
 

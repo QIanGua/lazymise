@@ -1,10 +1,24 @@
-# lazymise
+<p align="center">
+  <img src="docs/assets/logo.png" alt="lazymise logo" width="680" />
+</p>
+
+<h1 align="center">lazymise</h1>
 
 <p align="center">
   <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 A Vim-first, lazygit-inspired terminal workbench for [`mise`](https://mise.jdx.dev/) — uniting **Tasks**, **Tools**, **Env**, **Config & Health**, and **Command Log & Jobs** in one non-blocking TUI deeply aligned with `mise`'s official roadmap.
+
+## Screenshots
+
+### Tasks Workbench & Live Command Log
+
+![lazymise Tasks Workbench](docs/assets/screenshot-tasks.png)
+
+### Tools Management, Filtered Metadata & Context-Aware Footer
+
+![lazymise Tools Management](docs/assets/screenshot-tools.png)
 
 ## Layout Overview
 
