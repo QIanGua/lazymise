@@ -230,7 +230,7 @@ pub fn render_sidebar(
                 let mut suffix_spans: Vec<Span<'static>> = Vec::new();
                 let mut suffix_w = 0usize;
 
-                if task.cache_enabled() {
+                if task.has_any_cache() {
                     let s = format!(" {}", glyphs::CACHE);
                     suffix_w += UnicodeWidthStr::width(s.as_str());
                     suffix_spans.push(Span::styled(s, theme::warning()));
@@ -417,7 +417,9 @@ fn build_spec_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
     }
     meta_spans.push(Span::styled("   CACHE: ", theme::muted()));
     if task.cache_enabled() {
-        meta_spans.push(Span::styled(format!("{} on", glyphs::CACHE), theme::success()));
+        meta_spans.push(Span::styled(format!("{} hash", glyphs::CACHE), theme::success()));
+    } else if task.has_mtime_cache() {
+        meta_spans.push(Span::styled(format!("{} mtime", glyphs::CACHE), theme::accent()));
     } else {
         meta_spans.push(Span::styled("off", theme::muted()));
     }

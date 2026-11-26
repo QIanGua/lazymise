@@ -192,6 +192,14 @@ impl MiseTask {
         self.cache.as_ref().is_some_and(TaskCacheConfig::is_enabled)
     }
 
+    pub fn has_mtime_cache(&self) -> bool {
+        !self.sources.is_empty() && !self.outputs_display().is_empty()
+    }
+
+    pub fn has_any_cache(&self) -> bool {
+        self.cache_enabled() || self.has_mtime_cache()
+    }
+
     pub fn is_silent(&self) -> bool {
         match &self.silent {
             Value::Bool(b) => *b,
@@ -905,5 +913,29 @@ mod tests {
         assert!(detail.requested_versions.is_empty());
         assert!(detail.active_versions.is_empty());
         assert!(detail.security.is_empty());
+    }
+
+    #[test]
+    fn mise_task_distinguishes_hash_cache_and_mtime_cache() {
+        let plain = MiseTask::default();
+        assert!(!plain.cache_enabled());
+        assert!(!plain.has_mtime_cache());
+        assert!(!plain.has_any_cache());
+
+        let mtime = MiseTask {
+            sources: vec!["src/**/*.rs".into()],
+            outputs: serde_json::json!(["target/release/lazymise"]),
+            ..Default::default()
+        };
+        assert!(!mtime.cache_enabled());
+        assert!(mtime.has_mtime_cache());
+        assert!(mtime.has_any_cache());
+
+        let hashed = MiseTask {
+            cache: Some(TaskCacheConfig::Bool(true)),
+            ..Default::default()
+        };
+        assert!(hashed.cache_enabled());
+        assert!(hashed.has_any_cache());
     }
 }

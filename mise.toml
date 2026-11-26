@@ -24,6 +24,7 @@ run = "cargo clippy --all-targets -- -D warnings"
 description = "Build release binary"
 sources = ["src/**/*.rs", "Cargo.lock", "Cargo.toml"]
 outputs = ["target/release/lazymise"]
+cache = { enabled = true }
 run = "cargo build --release"
 
 [tasks.install]
