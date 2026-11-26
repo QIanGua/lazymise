@@ -1,878 +1,668 @@
-use std::collections::{BTreeSet, HashMap};
-use std::fs;
+pub mod keymap;
+pub mod mouse;
+pub mod overlay;
+pub mod reducer;
+pub mod state;
+
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::action::{Panel, ProfileSpec};
+use crate::app::keymap::{PendingChord, resolve};
+use crate::app::state::AppState;
+use crate::events::AppEvent;
+use crate::mise::loader::MiseLoader;
+use crate::runner::BackgroundRunner;
+use crate::ui::layout::LayoutMap;
 
-use crate::cli::StartTab;
-use crate::mise::MiseClient;
-use crate::mise::schema::MiseTask;
-use crate::model::task_tree::{TaskRow, build_task_rows};
-use crate::model::template::{WorkspaceTemplate, discover_templates};
-use crate::model::{EnvRow, ToolRow};
-use crate::runner::{BackgroundRunner, RunStatus, RunnerEvent, TaskRunRecord, copy_to_clipboard};
+pub use state::{AppState as State, ForegroundRequest, Overlay};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    Tasks,
-    Tools,
-    Env,
-    Templates,
-}
-
-impl From<StartTab> for Tab {
-    fn from(v: StartTab) -> Self {
-        match v {
-            StartTab::Tasks => Tab::Tasks,
-            StartTab::Tools => Tab::Tools,
-            StartTab::Env => Tab::Env,
-            StartTab::Templates => Tab::Templates,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusPane {
-    List,
-    Preview,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskPreviewMode {
-    Spec,
-    Output,
-}
-
-#[derive(Debug, Clone)]
-pub enum PendingAction {
-    MiseInstall,
-    MiseUpgrade(String),
-    MisePrune,
-    ScaffoldTemplate { template: String, name: String },
-}
-
-#[derive(Debug, Clone)]
-pub enum Overlay {
-    None,
-    Help,
-    Filter,
-    Confirm {
-        title: String,
-        command_preview: String,
-        action: PendingAction,
-    },
-    TemplateNameInput {
-        template: String,
-        input: String,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum ForegroundRequest {
-    RunTask(String),
-    WatchTask(String),
-    EditFile(PathBuf),
-    RunCommand {
-        program: String,
-        args: Vec<String>,
-        wait_for_enter: bool,
-        reload_after: bool,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingChord {
-    None,
-    G,
-    Z,
-}
-
+/// Top-level application coordinator owning `AppState`, `MiseLoader`, `BackgroundRunner`, and `LayoutMap`.
 pub struct App {
-    pub client: MiseClient,
-    pub tab: Tab,
-    pub focus: FocusPane,
-    pub task_preview_mode: TaskPreviewMode,
-    pub overlay: Overlay,
-    pub filter: String,
-    pub should_quit: bool,
-
-    // Raw & derived data
-    pub tasks: Vec<MiseTask>,
-    pub collapsed_groups: BTreeSet<String>,
-    pub task_rows: Vec<TaskRow>,
-    pub tools: Vec<ToolRow>,
-    pub env_rows: Vec<EnvRow>,
-    pub templates: Vec<WorkspaceTemplate>,
-
-    // Selection & scroll state
-    pub task_idx: usize,
-    pub tool_idx: usize,
-    pub env_idx: usize,
-    pub template_idx: usize,
-    pub preview_scroll: u16,
-
-    // Runtime state
-    pub revealed_env_keys: BTreeSet<String>,
-    pub run_records: HashMap<String, TaskRunRecord>,
-    pub last_task: Option<String>,
+    pub state: AppState,
+    pub loader: MiseLoader,
     pub runner: BackgroundRunner,
-    pub status_msg: String,
-    pub pending_fg: Option<ForegroundRequest>,
+    pub layout_map: LayoutMap,
     chord: PendingChord,
 }
 
 impl App {
-    pub fn new(workdir: PathBuf, start_tab: StartTab) -> Self {
-        let client = MiseClient::new(workdir);
-        let mut app = Self {
-            client,
-            tab: start_tab.into(),
-            focus: FocusPane::List,
-            task_preview_mode: TaskPreviewMode::Spec,
-            overlay: Overlay::None,
-            filter: String::new(),
-            should_quit: false,
-            tasks: Vec::new(),
-            collapsed_groups: BTreeSet::new(),
-            task_rows: Vec::new(),
-            tools: Vec::new(),
-            env_rows: Vec::new(),
-            templates: Vec::new(),
-            task_idx: 0,
-            tool_idx: 0,
-            env_idx: 0,
-            template_idx: 0,
-            preview_scroll: 0,
-            revealed_env_keys: BTreeSet::new(),
-            run_records: HashMap::new(),
-            last_task: None,
-            runner: BackgroundRunner::new(),
-            status_msg: String::new(),
-            pending_fg: None,
+    /// Construct the application and immediately launch non-blocking Tier-1 hot reload
+    /// (+ background Tier-2 warmup) so first frame renders in <10ms.
+    pub fn new(
+        workdir: PathBuf,
+        profile: ProfileSpec,
+        initial_panel: Panel,
+        tx: Sender<AppEvent>,
+    ) -> Self {
+        let loader = MiseLoader::new(workdir.clone(), tx.clone());
+        let runner = BackgroundRunner::new(tx);
+        let mut state = AppState::new(workdir, profile, initial_panel);
+        reducer::trigger_hot_reload(&mut state, &loader, true);
+        Self {
+            state,
+            loader,
+            runner,
+            layout_map: LayoutMap::default(),
+            chord: PendingChord::None,
+        }
+    }
+
+    pub fn handle_event(&mut self, ev: AppEvent) {
+        match ev {
+            AppEvent::Key(key) => {
+                if overlay::handle_overlay_key(&mut self.state, key, &self.loader, &self.runner) {
+                    return;
+                }
+                if let Some(action) = resolve(key, &self.state, &mut self.chord) {
+                    reducer::apply_action(&mut self.state, action, &self.loader, &self.runner);
+                }
+            }
+            AppEvent::Mouse(m) => {
+                mouse::handle_mouse(
+                    &mut self.state,
+                    m,
+                    &self.layout_map,
+                    &self.loader,
+                    &self.runner,
+                );
+            }
+            AppEvent::Resize(_, _) => {
+                self.state.dirty = true;
+            }
+            AppEvent::Tick => {
+                self.state.tick_count = self.state.tick_count.wrapping_add(1);
+                if self.state.prune_expired_toasts() || self.state.has_active_animations() {
+                    self.state.dirty = true;
+                }
+            }
+            AppEvent::MiseData(ev) => {
+                reducer::apply_mise_event(&mut self.state, ev);
+            }
+            AppEvent::Runner(ev) => {
+                reducer::apply_runner_event(&mut self.state, ev, &self.loader);
+            }
+        }
+    }
+
+    pub fn record_foreground_result(
+        &mut self,
+        req: &ForegroundRequest,
+        code: i32,
+        duration_ms: u128,
+        reload_after: bool,
+    ) {
+        let job_id = self.runner.allocate_job_id();
+        self.state
+            .record_foreground_result(req, code, duration_ms, job_id);
+        if reload_after {
+            reducer::trigger_hot_reload(&mut self.state, &self.loader, false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use pretty_assertions::assert_eq;
+    use ratatui::layout::Rect;
+
+    use super::*;
+    use crate::action::{
+        Action, Domain, EnvFilter, FocusArea, LogPanelMode, ScreenMode, TaskSubView, ToastLevel,
+        ToolScope,
+    };
+    use crate::app::state::RegistryStep;
+    use crate::events::{JobId, JobRecord, JobStatus, MiseDataEvent, MisePayload};
+    use crate::mise::schema::{EnvExtendedEntry, MiseTask, MiseToolEntry, RegistryEntry};
+
+    fn test_app() -> (App, mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let loader = MiseLoader::new(PathBuf::from("/tmp/lazymise-unit-test"), tx.clone());
+        let runner = BackgroundRunner::new(tx);
+        let mut state = AppState::new(
+            PathBuf::from("/tmp/lazymise-unit-test"),
+            None,
+            Panel::Tasks,
+        );
+        state.generation = loader.next_generation();
+        let app = App {
+            state,
+            loader,
+            runner,
+            layout_map: LayoutMap::default(),
             chord: PendingChord::None,
         };
-        app.reload_all(true);
-        app
+        (app, rx)
     }
 
-    pub fn reload_all(&mut self, initial: bool) {
-        let mut notes = Vec::new();
+    fn key(code: KeyCode) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
 
-        match self.client.list_tasks() {
-            Ok(tasks) => {
-                if initial {
-                    let has_local = tasks.iter().any(|t| !t.global);
-                    if has_local {
-                        self.collapsed_groups.insert("[global]".to_string());
-                    }
-                }
-                self.tasks = tasks;
-                self.rebuild_task_rows();
-                if initial {
-                    // Focus first concrete task rather than group header
-                    if let Some(pos) = self.task_rows.iter().position(|r| r.as_task().is_some()) {
-                        self.task_idx = pos;
-                    }
-                }
+    fn ctrl(c: char) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    #[test]
+    fn panel_switching_zoom_and_per_panel_filter_isolation() {
+        let (mut app, _rx) = test_app();
+
+        // Populate Tasks and Tools via MiseDataEvent
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Tasks,
+            payload: MisePayload::Tasks(vec![
+                MiseTask {
+                    name: "build".into(),
+                    ..Default::default()
+                },
+                MiseTask {
+                    name: "test".into(),
+                    ..Default::default()
+                },
+            ]),
+            log_entry: None,
+        }));
+
+        let mut tools_map = BTreeMap::new();
+        tools_map.insert(
+            "rust".into(),
+            vec![MiseToolEntry {
+                version: "1.90.0".into(),
+                installed: true,
+                active: true,
+                ..Default::default()
+            }],
+        );
+        tools_map.insert(
+            "node".into(),
+            vec![MiseToolEntry {
+                version: "22.1.0".into(),
+                installed: true,
+                active: true,
+                ..Default::default()
+            }],
+        );
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Tools,
+            payload: MisePayload::Tools(tools_map),
+            log_entry: None,
+        }));
+
+        // Apply filter on Tasks panel (`/` -> "bu" -> Enter)
+        app.handle_event(key(KeyCode::Char('/')));
+        app.handle_event(key(KeyCode::Char('b')));
+        app.handle_event(key(KeyCode::Char('u')));
+        app.handle_event(key(KeyCode::Enter));
+        assert_eq!(app.state.filters.tasks, "bu");
+        assert_eq!(app.state.filters.tools, "");
+
+        // Switch to Tools (`2`) — Tools filter must stay isolated & unfiltered
+        app.handle_event(key(KeyCode::Char('2')));
+        assert_eq!(app.state.active_panel, Panel::Tools);
+        assert_eq!(app.state.tools_vm.rows.len(), 2);
+
+        // Cycle zoom modes: Normal -> Half -> Full -> Half -> Normal
+        assert_eq!(app.state.screen_mode, ScreenMode::Normal);
+        app.handle_event(key(KeyCode::Char('+')));
+        assert_eq!(app.state.screen_mode, ScreenMode::Half);
+        app.handle_event(key(KeyCode::Char('+')));
+        assert_eq!(app.state.screen_mode, ScreenMode::Full);
+        app.handle_event(key(KeyCode::Char('_')));
+        assert_eq!(app.state.screen_mode, ScreenMode::Half);
+
+        // Toggle Command Log drawer (`@`): Compact -> Expanded -> Hidden
+        assert_eq!(app.state.log_mode, LogPanelMode::Compact);
+        app.handle_event(key(KeyCode::Char('@')));
+        assert_eq!(app.state.log_mode, LogPanelMode::Expanded);
+        app.handle_event(key(KeyCode::Char('@')));
+        assert_eq!(app.state.log_mode, LogPanelMode::Hidden);
+    }
+
+    #[test]
+    fn drops_stale_generation_mise_events_and_enforces_scroll_bounds() {
+        let (mut app, _rx) = test_app();
+        app.state.generation = 5;
+
+        // Stale event (gen=4) must be dropped
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 4,
+            domain: Domain::Tasks,
+            payload: MisePayload::Tasks(vec![MiseTask {
+                name: "stale".into(),
+                ..Default::default()
+            }]),
+            log_entry: None,
+        }));
+        assert!(app.state.tasks.is_empty());
+
+        // Bounded detail scroll never overflows past max_offset
+        app.state.focus = FocusArea::Main;
+        app.state.detail_scroll.content_len = 30;
+        app.state.detail_scroll.viewport_height = 10;
+        app.handle_event(key(KeyCode::Char('G')));
+        assert_eq!(app.state.detail_scroll.offset, 20);
+        app.handle_event(key(KeyCode::Char('j')));
+        assert_eq!(app.state.detail_scroll.offset, 20);
+        app.handle_event(key(KeyCode::Home));
+        assert_eq!(app.state.detail_scroll.offset, 0);
+    }
+
+    #[test]
+    fn env_secret_reveal_auto_remasks_after_ttl() {
+        let (mut app, _rx) = test_app();
+        let mut ext = BTreeMap::new();
+        ext.insert(
+            "API_TOKEN".into(),
+            EnvExtendedEntry {
+                value: "super-secret".into(),
+                source: Some("/tmp/lazymise-unit-test/mise.toml".into()),
+                tool: None,
+            },
+        );
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Env,
+            payload: MisePayload::Env {
+                extended: ext,
+                redacted_keys: Default::default(),
+                paths: vec![],
+                vars: Default::default(),
+            },
+            log_entry: None,
+        }));
+
+        app.handle_event(key(KeyCode::Char('3')));
+        assert!(!app.state.is_env_revealed("API_TOKEN"));
+        app.handle_event(key(KeyCode::Char('S')));
+        assert!(app.state.is_env_revealed("API_TOKEN"));
+
+        // Simulate 30s expiration
+        app.state
+            .revealed_env_keys
+            .insert("API_TOKEN".into(), Instant::now() - Duration::from_secs(1));
+        app.handle_event(AppEvent::Tick);
+        assert!(!app.state.is_env_revealed("API_TOKEN"));
+
+        // Cycle env filter
+        app.handle_event(key(KeyCode::Char('f')));
+        assert_eq!(app.state.env_filter, EnvFilter::Project);
+    }
+
+    #[test]
+    fn quit_guards_running_jobs_and_double_ctrl_c_forces_quit() {
+        let (mut app, _rx) = test_app();
+        app.state.jobs.insert(
+            JobId(1),
+            JobRecord {
+                id: JobId(1),
+                label: "task:dev".into(),
+                task_name: Some("dev".into()),
+                command_display: "mise run dev".into(),
+                pid: None,
+                started_at: Instant::now(),
+                status: JobStatus::Running,
+                lines: vec![],
+            },
+        );
+
+        // `q` opens Confirm instead of quitting immediately
+        app.handle_event(key(KeyCode::Char('q')));
+        assert!(!app.state.should_quit);
+        assert!(matches!(app.state.overlay, Overlay::Confirm { .. }));
+
+        // Cancel confirm
+        app.handle_event(key(KeyCode::Esc));
+        assert!(matches!(app.state.overlay, Overlay::None));
+
+        // First Ctrl-C arms force quit with warning toast
+        app.handle_event(ctrl('c'));
+        assert!(!app.state.should_quit);
+        assert!(app.state.ctrl_c_armed_at.is_some());
+        assert_eq!(
+            app.state.active_toast().map(|t| t.level),
+            Some(ToastLevel::Warning)
+        );
+
+        // Second Ctrl-C exits
+        app.handle_event(ctrl('c'));
+        assert!(app.state.should_quit);
+    }
+
+    #[test]
+    fn overlays_help_registry_and_profile_switcher_flow() {
+        let (mut app, _rx) = test_app();
+        app.state.registry = vec![RegistryEntry {
+            short: "ripgrep".into(),
+            backends: vec!["aqua:BurntSushi/ripgrep".into()],
+            bins: vec!["rg".into()],
+            description: Some("Fast search".into()),
+            aliases: vec!["rg".into()],
+        }];
+
+        // Open Help (`?`), filter for "zoom", press Enter -> triggers ZoomIn
+        app.handle_event(key(KeyCode::Char('?')));
+        for ch in "zoom".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
+        }
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(app.state.overlay, Overlay::None));
+        assert_eq!(app.state.screen_mode, ScreenMode::Half);
+
+        // Open Registry Picker on Tools (`2` -> `a`), search "rg", press Enter -> PickVersion
+        app.handle_event(key(KeyCode::Char('2')));
+        app.handle_event(key(KeyCode::Char('a')));
+        app.handle_event(key(KeyCode::Char('r')));
+        app.handle_event(key(KeyCode::Char('g')));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.state.overlay,
+            Overlay::RegistryPicker {
+                step: RegistryStep::PickVersion { ref tool, .. },
+                ..
+            } if tool == "ripgrep"
+        ));
+
+        // Pick "latest" -> PickScope -> Confirm `mise use ripgrep@latest`
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.state.overlay,
+            Overlay::RegistryPicker {
+                step: RegistryStep::PickScope { .. },
+                ..
             }
-            Err(err) => notes.push(format!("tasks: {err}")),
-        }
+        ));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.state.overlay,
+            Overlay::Confirm { ref command_preview, .. } if command_preview.contains("mise use ripgrep@latest")
+        ));
+        app.handle_event(key(KeyCode::Esc));
 
-        match self.client.list_tools() {
-            Ok(map) => {
-                let mut rows = Vec::new();
-                for (name, entries) in map {
-                    for entry in entries {
-                        rows.push(ToolRow {
-                            name: name.clone(),
-                            entry,
-                        });
-                    }
-                }
-                // Active tools first, then alphabetical
-                rows.sort_by(|a, b| {
-                    b.entry
-                        .active
-                        .cmp(&a.entry.active)
-                        .then_with(|| a.name.cmp(&b.name))
-                });
-                self.tools = rows;
-                self.clamp_indices();
-            }
-            Err(err) => notes.push(format!("tools: {err}")),
+        // Profile Switcher (`E`) -> type "prod" -> Enter
+        app.handle_event(key(KeyCode::Char('E')));
+        for ch in "prod".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
         }
-
-        match self.client.list_env() {
-            Ok(map) => {
-                self.env_rows = map
-                    .into_iter()
-                    .map(|(key, value)| {
-                        let sensitive = EnvRow::is_sensitive_key(&key);
-                        EnvRow {
-                            key,
-                            value,
-                            sensitive,
-                        }
-                    })
-                    .collect();
-                self.clamp_indices();
-            }
-            Err(err) => notes.push(format!("env: {err}")),
-        }
-
-        self.templates = discover_templates();
-        self.clamp_indices();
-
-        if notes.is_empty() {
-            self.status_msg = format!(
-                "Loaded {} tasks, {} tools, {} env vars, {} templates",
-                self.tasks.len(),
-                self.tools.len(),
-                self.env_rows.len(),
-                self.templates.len()
-            );
-        } else {
-            self.status_msg = format!("Partial load: {}", notes.join(" | "));
-        }
+        app.handle_event(key(KeyCode::Enter));
+        assert_eq!(app.state.profile.as_deref(), Some("prod"));
     }
 
-    pub fn rebuild_task_rows(&mut self) {
-        self.task_rows = build_task_rows(&self.tasks, &self.collapsed_groups, &self.filter);
-        self.clamp_indices();
+    #[test]
+    fn mouse_click_subtab_and_hover_wheel_scroll() {
+        let (mut app, _rx) = test_app();
+        app.state.detail_scroll.content_len = 50;
+        app.state.detail_scroll.viewport_height = 10;
+        app.layout_map.main_area = Rect::new(40, 2, 60, 20);
+        app.layout_map.main_subtabs = vec![
+            (0, Rect::new(41, 2, 8, 1)),
+            (1, Rect::new(50, 2, 8, 1)),
+        ];
+
+        // Hover scroll over Main scrolls detail_scroll even while Sidebar is focused!
+        assert_eq!(app.state.focus, FocusArea::Sidebar);
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 55,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.state.detail_scroll.offset, 3);
+        assert_eq!(app.state.focus, FocusArea::Sidebar);
+
+        // Clicking sub-tab 1 switches TaskSubView to Output and focuses Main
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 52,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.state.task_subview, TaskSubView::Output);
+        assert_eq!(app.state.focus, FocusArea::Main);
+
+        // Verify ToolScope cycling via direct action
+        reducer::apply_action(&mut app.state, Action::ToolCycleScope, &app.loader, &app.runner);
+        assert_eq!(app.state.tool_scope, ToolScope::Active);
     }
 
-    pub fn filtered_tools(&self) -> Vec<&ToolRow> {
-        let q = self.filter.trim().to_ascii_lowercase();
-        if q.is_empty() {
-            self.tools.iter().collect()
-        } else {
-            self.tools
-                .iter()
-                .filter(|r| {
-                    r.name.to_ascii_lowercase().contains(&q)
-                        || r.entry.version.to_ascii_lowercase().contains(&q)
-                })
-                .collect()
+    #[test]
+    fn unicode_text_input_env_set_form_and_command_palette_work() {
+        let (mut app, _rx) = test_app();
+
+        // Unicode TextInput editing (insert, move left, backspace, delete word)
+        let mut ti = crate::app::state::TextInput::new("你好 world");
+        ti.move_left();
+        ti.insert_char('!');
+        assert_eq!(ti.value, "你好 worl!d");
+        ti.move_end();
+        ti.delete_word_back();
+        assert_eq!(ti.value, "你好 ");
+
+        // Command Palette (`:`) -> search "doctor" -> Enter switches to Config Doctor subview
+        app.handle_event(key(KeyCode::Char(':')));
+        for ch in "doctor".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
         }
-    }
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(app.state.overlay, Overlay::None));
+        assert_eq!(app.state.config_subview, crate::action::ConfigSubView::Doctor);
 
-    pub fn filtered_env(&self) -> Vec<&EnvRow> {
-        let q = self.filter.trim().to_ascii_lowercase();
-        if q.is_empty() {
-            self.env_rows.iter().collect()
-        } else {
-            self.env_rows
-                .iter()
-                .filter(|r| {
-                    r.key.to_ascii_lowercase().contains(&q)
-                        || (!r.sensitive && r.value.to_ascii_lowercase().contains(&q))
-                })
-                .collect()
+        // EnvSetForm (`3` -> `a` -> type key, Tab, type val, Enter -> Confirm `mise set FOO=bar`)
+        app.handle_event(key(KeyCode::Char('3')));
+        app.handle_event(key(KeyCode::Char('a')));
+        for ch in "FOO".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
         }
-    }
-
-    pub fn filtered_templates(&self) -> Vec<&WorkspaceTemplate> {
-        let q = self.filter.trim().to_ascii_lowercase();
-        if q.is_empty() {
-            self.templates.iter().collect()
-        } else {
-            self.templates
-                .iter()
-                .filter(|t| t.name.to_ascii_lowercase().contains(&q))
-                .collect()
+        app.handle_event(key(KeyCode::Tab));
+        for ch in "bar".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
         }
+        app.handle_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.state.overlay,
+            Overlay::Confirm { ref command_preview, .. } if command_preview == "mise set FOO=bar"
+        ));
     }
 
-    pub fn selected_task(&self) -> Option<&MiseTask> {
-        self.task_rows.get(self.task_idx).and_then(TaskRow::as_task)
-    }
+    #[test]
+    fn runner_events_update_jobs_command_log_and_auto_follow() {
+        let (mut app, _rx) = test_app();
+        app.state.detail_scroll.viewport_height = 5;
+        app.state.selected_job_id = Some(JobId(9));
+        app.state.jobs.insert(
+            JobId(9),
+            JobRecord {
+                id: JobId(9),
+                label: "task:test".into(),
+                task_name: Some("test".into()),
+                command_display: "mise run test".into(),
+                pid: None,
+                started_at: Instant::now(),
+                status: JobStatus::Running,
+                lines: vec![],
+            },
+        );
+        app.state.command_log.record(
+            crate::events::CommandSource::User,
+            "mise run test",
+            Some(JobId(9)),
+            JobStatus::Running,
+            None,
+        );
 
-    pub fn selected_task_script(&self) -> String {
-        let Some(task) = self.selected_task() else {
-            return String::new();
-        };
-        if !task.run.is_empty() {
-            return task.run.join("\n");
+        for i in 0..10 {
+            app.handle_event(AppEvent::Runner(crate::events::RunnerEvent::Output {
+                job_id: JobId(9),
+                line: crate::events::JobOutputLine {
+                    text: format!("line {i}"),
+                    is_stderr: false,
+                },
+                overwrite_last: false,
+            }));
         }
-        let path = task.file.as_deref().unwrap_or(&task.source);
-        if !path.is_empty()
-            && !path.ends_with(".toml")
-            && let Ok(content) = fs::read_to_string(path)
-        {
-            return content;
-        }
-        "(inline or external task definition)".to_string()
-    }
+        assert!(app.state.detail_scroll.offset > 0);
 
-    pub fn poll_runner(&mut self) {
-        for ev in self.runner.drain_events() {
-            match ev {
-                RunnerEvent::Line { task, line } => {
-                    let rec = self
-                        .run_records
-                        .entry(task)
-                        .or_insert_with(|| TaskRunRecord {
-                            status: RunStatus::Running,
-                            lines: Vec::new(),
-                        });
-                    rec.push_line(line);
-                }
-                RunnerEvent::Finished {
-                    task,
-                    exit_code,
-                    duration_ms,
-                } => {
-                    let status = if exit_code == 0 {
-                        RunStatus::Success { duration_ms }
-                    } else {
-                        RunStatus::Failed {
-                            code: exit_code,
-                            duration_ms,
-                        }
-                    };
-                    let rec = self
-                        .run_records
-                        .entry(task.clone())
-                        .or_insert_with(|| TaskRunRecord {
-                            status: status.clone(),
-                            lines: Vec::new(),
-                        });
-                    rec.status = status;
-                    self.status_msg = format!(
-                        "Task `{task}` finished (exit {exit_code}, {:.2}s)",
-                        duration_ms as f64 / 1000.0
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn record_foreground_result(&mut self, task: &str, code: i32, duration_ms: u128) {
-        let status = if code == 0 {
-            RunStatus::Success { duration_ms }
-        } else {
-            RunStatus::Failed { code, duration_ms }
-        };
-        self.run_records
-            .entry(task.to_string())
-            .and_modify(|r| r.status = status.clone())
-            .or_insert_with(|| TaskRunRecord {
-                status,
-                lines: vec![format!(
-                    "(ran in foreground TTY; exit {code}, {:.2}s)",
-                    duration_ms as f64 / 1000.0
-                )],
-            });
-        self.status_msg = format!(
-            "Task `{task}` exited {code} ({:.2}s)",
-            duration_ms as f64 / 1000.0
+        app.handle_event(AppEvent::Runner(crate::events::RunnerEvent::Finished {
+            job_id: JobId(9),
+            exit_code: 0,
+            duration_ms: 250,
+            killed: false,
+        }));
+        assert_eq!(
+            app.state.jobs[&JobId(9)].status,
+            JobStatus::Success { duration_ms: 250 }
+        );
+        assert_eq!(
+            app.state
+                .command_log
+                .find_by_job(JobId(9))
+                .map(|e| &e.status),
+            Some(&JobStatus::Success { duration_ms: 250 })
         );
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) {
-        // Ctrl-C always exits cleanly
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return;
+    #[test]
+    fn verifier_fixes_mouse_offset_palette_task_jump_secret_masking_and_daemons() {
+        let (mut app, _rx) = test_app();
+
+        // 1. Mouse click on Tasks sidebar while active_panel == Panel::Jobs uses tasks offset, not jobs offset
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Tasks,
+            payload: MisePayload::Tasks(vec![
+                MiseTask {
+                    name: "alpha".into(),
+                    ..Default::default()
+                },
+                MiseTask {
+                    name: "exp:deploy".into(),
+                    description: "Deploy experiment".into(),
+                    ..Default::default()
+                },
+            ]),
+            log_entry: None,
+        }));
+        app.state.active_panel = Panel::Jobs;
+        *app.state.list_states.jobs.offset_mut() = 7;
+        *app.state.list_states.tasks.offset_mut() = 0;
+        app.layout_map.sidebar_panels = vec![(
+            Panel::Tasks,
+            Rect::new(0, 1, 35, 10),
+            Rect::new(1, 2, 33, 8),
+        )];
+        // Clicking row y=3 (inner offset 1) should select task_rows[1] ("alpha"), NOT clamped to end via jobs offset 7
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.state.active_panel, Panel::Tasks);
+        assert_eq!(app.state.list_states.tasks.selected(), Some(1));
+
+        // 2. Command Palette jumps to a collapsed task from another panel
+        app.state.collapsed_groups.insert("exp".into());
+        app.state.rebuild_task_rows();
+        app.handle_event(key(KeyCode::Char('2'))); // switch to Tools
+        app.handle_event(key(KeyCode::Char(':')));
+        for ch in "deploy".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
         }
+        app.handle_event(key(KeyCode::Enter));
+        assert_eq!(app.state.active_panel, Panel::Tasks);
+        assert_eq!(
+            app.state.selected_task().map(|t| t.name.as_str()),
+            Some("exp:deploy")
+        );
 
-        match self.overlay.clone() {
-            Overlay::Help => {
-                if matches!(
-                    key.code,
-                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Enter
-                ) {
-                    self.overlay = Overlay::None;
-                }
-                return;
-            }
-            Overlay::Filter => {
-                self.handle_filter_key(key);
-                return;
-            }
-            Overlay::Confirm { action, .. } => {
-                match key.code {
-                    KeyCode::Char('y') | KeyCode::Enter => {
-                        self.overlay = Overlay::None;
-                        self.execute_confirmed(action);
-                    }
-                    KeyCode::Char('n') | KeyCode::Esc => {
-                        self.overlay = Overlay::None;
-                        self.status_msg = "Action cancelled".to_string();
-                    }
-                    _ => {}
-                }
-                return;
-            }
-            Overlay::TemplateNameInput { template, mut input } => {
-                match key.code {
-                    KeyCode::Esc => {
-                        self.overlay = Overlay::None;
-                    }
-                    KeyCode::Backspace => {
-                        input.pop();
-                        self.overlay = Overlay::TemplateNameInput { template, input };
-                    }
-                    KeyCode::Enter => {
-                        let name = input.trim().to_string();
-                        if name.is_empty() || name.contains('/') || name.starts_with('.') {
-                            self.status_msg =
-                                "Project name must be a non-empty single directory name"
-                                    .to_string();
-                            self.overlay = Overlay::TemplateNameInput { template, input };
-                        } else {
-                            let cmd = format!("mise run new {template} {name}");
-                            self.overlay = Overlay::Confirm {
-                                title: format!("Scaffold new `{template}` workspace"),
-                                command_preview: cmd,
-                                action: PendingAction::ScaffoldTemplate { template, name },
-                            };
-                        }
-                    }
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        input.push(c);
-                        self.overlay = Overlay::TemplateNameInput { template, input };
-                    }
-                    _ => {}
-                }
-                return;
-            }
-            Overlay::None => {}
-        }
-
-        // Handle two-key Vim chords (gg, za)
-        if self.chord != PendingChord::None {
-            let chord = self.chord;
-            self.chord = PendingChord::None;
-            match (chord, key.code) {
-                (PendingChord::G, KeyCode::Char('g')) => {
-                    self.move_top();
-                    return;
-                }
-                (PendingChord::Z, KeyCode::Char('a')) => {
-                    if self.tab == Tab::Tasks {
-                        self.toggle_current_group_fold();
-                    }
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Ctrl-d / Ctrl-u half-page scrolling
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('d') => {
-                    self.move_delta(10);
-                    return;
-                }
-                KeyCode::Char('u') => {
-                    self.move_delta(-10);
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Global navigation & actions
-        match key.code {
-            KeyCode::Char('q') => {
-                self.should_quit = true;
-                return;
-            }
-            KeyCode::Char('?') => {
-                self.overlay = Overlay::Help;
-                return;
-            }
-            KeyCode::Char('1') => {
-                self.switch_tab(Tab::Tasks);
-                return;
-            }
-            KeyCode::Char('2') => {
-                self.switch_tab(Tab::Tools);
-                return;
-            }
-            KeyCode::Char('3') => {
-                self.switch_tab(Tab::Env);
-                return;
-            }
-            KeyCode::Char('4') => {
-                self.switch_tab(Tab::Templates);
-                return;
-            }
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    FocusPane::List => FocusPane::Preview,
-                    FocusPane::Preview => FocusPane::List,
-                };
-                return;
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.focus = FocusPane::List;
-                return;
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.focus = FocusPane::Preview;
-                return;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.move_delta(1);
-                return;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.move_delta(-1);
-                return;
-            }
-            KeyCode::Char('g') => {
-                self.chord = PendingChord::G;
-                return;
-            }
-            KeyCode::Char('z') => {
-                self.chord = PendingChord::Z;
-                return;
-            }
-            KeyCode::Char('G') => {
-                self.move_bottom();
-                return;
-            }
-            KeyCode::Char('/') => {
-                self.overlay = Overlay::Filter;
-                return;
-            }
-            KeyCode::Esc => {
-                if !self.filter.is_empty() {
-                    self.filter.clear();
-                    self.rebuild_task_rows();
-                    self.clamp_indices();
-                    self.status_msg = "Filter cleared".to_string();
-                }
-                return;
-            }
-            KeyCode::Char('R') => {
-                self.reload_all(false);
-                return;
-            }
-            _ => {}
-        }
-
-        // Tab-specific actions
-        match self.tab {
-            Tab::Tasks => self.handle_tasks_key(key.code),
-            Tab::Tools => self.handle_tools_key(key.code),
-            Tab::Env => self.handle_env_key(key.code),
-            Tab::Templates => self.handle_templates_key(key.code),
-        }
-    }
-
-    fn handle_filter_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Enter => {
-                self.overlay = Overlay::None;
-            }
-            KeyCode::Esc => {
-                self.filter.clear();
-                self.rebuild_task_rows();
-                self.clamp_indices();
-                self.overlay = Overlay::None;
-            }
-            KeyCode::Backspace => {
-                self.filter.pop();
-                self.rebuild_task_rows();
-                self.clamp_indices();
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.filter.push(c);
-                self.rebuild_task_rows();
-                self.clamp_indices();
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_tasks_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char(' ') => self.toggle_current_group_fold(),
-            KeyCode::Char('p') => {
-                self.task_preview_mode = match self.task_preview_mode {
-                    TaskPreviewMode::Spec => TaskPreviewMode::Output,
-                    TaskPreviewMode::Output => TaskPreviewMode::Spec,
-                };
-                self.preview_scroll = 0;
-            }
-            KeyCode::Enter => {
-                if let Some(row) = self.task_rows.get(self.task_idx).cloned() {
-                    match row {
-                        TaskRow::Group { .. } => self.toggle_current_group_fold(),
-                        TaskRow::Task(task) => {
-                            self.last_task = Some(task.name.clone());
-                            self.pending_fg = Some(ForegroundRequest::RunTask(task.name));
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('x') => {
-                if let Some(task) = self.selected_task().cloned() {
-                    self.start_background_task(task.name);
-                }
-            }
-            KeyCode::Char('r') => {
-                if let Some(name) = self.last_task.clone() {
-                    self.pending_fg = Some(ForegroundRequest::RunTask(name));
-                } else {
-                    self.status_msg = "No previous task to re-run".to_string();
-                }
-            }
-            KeyCode::Char('w') => {
-                if let Some(task) = self.selected_task().cloned() {
-                    self.last_task = Some(task.name.clone());
-                    self.pending_fg = Some(ForegroundRequest::WatchTask(task.name));
-                }
-            }
-            KeyCode::Char('e') => {
-                if let Some(task) = self.selected_task().cloned() {
-                    let target = task.file.unwrap_or(task.source);
-                    if target.is_empty() {
-                        self.status_msg = "Task has no editable source file".to_string();
-                    } else {
-                        self.pending_fg = Some(ForegroundRequest::EditFile(PathBuf::from(target)));
-                    }
-                }
-            }
-            KeyCode::Char('y') => {
-                if let Some(task) = self.selected_task() {
-                    let cmd = format!("mise run {}", task.name);
-                    match copy_to_clipboard(&cmd) {
-                        Ok(()) => self.status_msg = format!("Copied: {cmd}"),
-                        Err(e) => self.status_msg = format!("Clipboard error: {e}"),
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_tools_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('i') => {
-                self.overlay = Overlay::Confirm {
-                    title: "Install configured mise tools".to_string(),
-                    command_preview: "mise install".to_string(),
-                    action: PendingAction::MiseInstall,
-                };
-            }
-            KeyCode::Char('u') => {
-                if let Some(tool) = self.filtered_tools().get(self.tool_idx) {
-                    let name = tool.name.clone();
-                    self.overlay = Overlay::Confirm {
-                        title: format!("Upgrade tool `{name}`"),
-                        command_preview: format!("mise upgrade {name}"),
-                        action: PendingAction::MiseUpgrade(name),
-                    };
-                }
-            }
-            KeyCode::Char('p') => {
-                self.overlay = Overlay::Confirm {
-                    title: "Prune unused mise tool versions".to_string(),
-                    command_preview: "mise prune".to_string(),
-                    action: PendingAction::MisePrune,
-                };
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_env_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('S') => {
-                if let Some(row) = self.filtered_env().get(self.env_idx) {
-                    let key = row.key.clone();
-                    if self.revealed_env_keys.contains(&key) {
-                        self.revealed_env_keys.remove(&key);
-                    } else {
-                        self.revealed_env_keys.insert(key);
-                    }
-                }
-            }
-            KeyCode::Char('y') => {
-                if let Some(row) = self.filtered_env().get(self.env_idx) {
-                    let val = row.value.clone();
-                    let key = row.key.clone();
-                    match copy_to_clipboard(&val) {
-                        Ok(()) => self.status_msg = format!("Copied value of {key}"),
-                        Err(e) => self.status_msg = format!("Clipboard error: {e}"),
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_templates_key(&mut self, code: KeyCode) {
-        if matches!(code, KeyCode::Enter | KeyCode::Char('n'))
-            && let Some(tpl) = self.filtered_templates().get(self.template_idx)
-        {
-            self.overlay = Overlay::TemplateNameInput {
-                template: tpl.name.clone(),
-                input: String::new(),
-            };
-        }
-    }
-
-    fn execute_confirmed(&mut self, action: PendingAction) {
-        let req = match action {
-            PendingAction::MiseInstall => ForegroundRequest::RunCommand {
-                program: "mise".to_string(),
-                args: vec!["install".to_string()],
-                wait_for_enter: true,
-                reload_after: true,
-            },
-            PendingAction::MiseUpgrade(name) => ForegroundRequest::RunCommand {
-                program: "mise".to_string(),
-                args: vec!["upgrade".to_string(), name],
-                wait_for_enter: true,
-                reload_after: true,
-            },
-            PendingAction::MisePrune => ForegroundRequest::RunCommand {
-                program: "mise".to_string(),
-                args: vec!["prune".to_string()],
-                wait_for_enter: true,
-                reload_after: true,
-            },
-            PendingAction::ScaffoldTemplate { template, name } => ForegroundRequest::RunCommand {
-                program: "mise".to_string(),
-                args: vec!["run".to_string(), "new".to_string(), template, name],
-                wait_for_enter: true,
-                reload_after: false,
-            },
-        };
-        self.pending_fg = Some(req);
-    }
-
-    fn start_background_task(&mut self, task_name: String) {
-        self.last_task = Some(task_name.clone());
-        self.task_preview_mode = TaskPreviewMode::Output;
-        self.preview_scroll = 0;
-        self.run_records.insert(
-            task_name.clone(),
-            TaskRunRecord {
-                status: RunStatus::Running,
-                lines: vec![format!("$ mise run {task_name}")],
+        // 3. Env editing a masked secret does NOT prefill plaintext, and Confirm + safe command redact it
+        let mut ext = BTreeMap::new();
+        ext.insert(
+            "API_TOKEN".into(),
+            EnvExtendedEntry {
+                value: "super-secret-value".into(),
+                source: Some("/tmp/lazymise-unit-test/mise.toml".into()),
+                tool: None,
             },
         );
-        self.status_msg = format!("Running `{task_name}` in background...");
-        self.runner
-            .spawn_mise_task(self.client.workdir().to_path_buf(), task_name);
-    }
-
-    fn toggle_current_group_fold(&mut self) {
-        let key = match self.task_rows.get(self.task_idx) {
-            Some(TaskRow::Group { key, .. }) => Some(key.clone()),
-            Some(TaskRow::Task(t)) => Some(t.group_key()),
-            None => None,
-        };
-        if let Some(k) = key {
-            if self.collapsed_groups.contains(&k) {
-                self.collapsed_groups.remove(&k);
-            } else {
-                self.collapsed_groups.insert(k.clone());
-            }
-            self.rebuild_task_rows();
-            if let Some(pos) = self
-                .task_rows
-                .iter()
-                .position(|r| r.group_key() == Some(k.as_str()))
-            {
-                self.task_idx = pos;
-            }
+        app.handle_event(AppEvent::MiseData(MiseDataEvent {
+            generation: 1,
+            domain: Domain::Env,
+            payload: MisePayload::Env {
+                extended: ext,
+                redacted_keys: Default::default(),
+                paths: vec![],
+                vars: Default::default(),
+            },
+            log_entry: None,
+        }));
+        app.handle_event(key(KeyCode::Char('3')));
+        app.handle_event(key(KeyCode::Char('e')));
+        if let Overlay::EnvSetForm { ref value, .. } = app.state.overlay {
+            assert_eq!(value.value, "");
+        } else {
+            panic!("expected EnvSetForm overlay");
         }
-    }
-
-    fn switch_tab(&mut self, tab: Tab) {
-        if self.tab != tab {
-            self.tab = tab;
-            self.focus = FocusPane::List;
-            self.preview_scroll = 0;
-            self.clamp_indices();
+        for ch in "new-secret".chars() {
+            app.handle_event(key(KeyCode::Char(ch)));
         }
-    }
-
-    fn current_list_len(&self) -> usize {
-        match self.tab {
-            Tab::Tasks => self.task_rows.len(),
-            Tab::Tools => self.filtered_tools().len(),
-            Tab::Env => self.filtered_env().len(),
-            Tab::Templates => self.filtered_templates().len(),
+        app.handle_event(key(KeyCode::Enter));
+        if let Overlay::Confirm {
+            ref command_preview,
+            ..
+        } = app.state.overlay
+        {
+            assert!(!command_preview.contains("new-secret"));
+            assert!(command_preview.contains("API_TOKEN=••••••••"));
+        } else {
+            panic!("expected Confirm overlay");
         }
-    }
+        app.handle_event(key(KeyCode::Esc));
 
-    fn current_idx_mut(&mut self) -> &mut usize {
-        match self.tab {
-            Tab::Tasks => &mut self.task_idx,
-            Tab::Tools => &mut self.tool_idx,
-            Tab::Env => &mut self.env_idx,
-            Tab::Templates => &mut self.template_idx,
-        }
-    }
+        // 4. TaskToggleHidden bumps generation cleanly
+        let gen_before = app.state.generation;
+        app.handle_event(key(KeyCode::Char('1')));
+        app.handle_event(key(KeyCode::Char('H')));
+        assert!(app.state.generation > gen_before);
 
-    fn clamp_indices(&mut self) {
-        let clamp = |idx: &mut usize, len: usize| {
-            if len == 0 {
-                *idx = 0;
-            } else if *idx >= len {
-                *idx = len - 1;
-            }
-        };
-        clamp(&mut self.task_idx, self.task_rows.len());
-        let t_len = self.filtered_tools().len();
-        clamp(&mut self.tool_idx, t_len);
-        let e_len = self.filtered_env().len();
-        clamp(&mut self.env_idx, e_len);
-        let tpl_len = self.filtered_templates().len();
-        clamp(&mut self.template_idx, tpl_len);
-    }
-
-    fn move_delta(&mut self, delta: isize) {
-        match self.focus {
-            FocusPane::Preview => {
-                if delta > 0 {
-                    self.preview_scroll = self.preview_scroll.saturating_add(delta as u16);
-                } else {
-                    self.preview_scroll = self.preview_scroll.saturating_sub((-delta) as u16);
-                }
-            }
-            FocusPane::List => {
-                let len = self.current_list_len();
-                if len == 0 {
-                    return;
-                }
-                let idx = self.current_idx_mut();
-                let next = (*idx as isize + delta).clamp(0, (len - 1) as isize) as usize;
-                *idx = next;
-                self.preview_scroll = 0;
-            }
-        }
-    }
-
-    fn move_top(&mut self) {
-        match self.focus {
-            FocusPane::Preview => self.preview_scroll = 0,
-            FocusPane::List => {
-                *self.current_idx_mut() = 0;
-                self.preview_scroll = 0;
-            }
-        }
-    }
-
-    fn move_bottom(&mut self) {
-        match self.focus {
-            FocusPane::Preview => self.preview_scroll = self.preview_scroll.saturating_add(200),
-            FocusPane::List => {
-                let len = self.current_list_len();
-                if len > 0 {
-                    *self.current_idx_mut() = len - 1;
-                    self.preview_scroll = 0;
-                }
-            }
+        // 5. Config -> Services moves selected_daemon_idx and treats "active" as running
+        app.state.config_vm.daemons = vec![
+            crate::mise::schema::DaemonEntry {
+                name: "postgres".into(),
+                status: "active".into(),
+                ..Default::default()
+            },
+            crate::mise::schema::DaemonEntry {
+                name: "redis".into(),
+                status: "stopped".into(),
+                ..Default::default()
+            },
+        ];
+        app.state.active_panel = Panel::Config;
+        app.state.config_subview = crate::action::ConfigSubView::Services;
+        app.state.focus = FocusArea::Main;
+        assert_eq!(app.state.selected_daemon_idx, 0);
+        app.handle_event(key(KeyCode::Char('j')));
+        assert_eq!(app.state.selected_daemon_idx, 1);
+        app.handle_event(key(KeyCode::Char('k')));
+        assert_eq!(app.state.selected_daemon_idx, 0);
+        app.handle_event(key(KeyCode::Char('s')));
+        if let Overlay::Confirm {
+            ref command_preview,
+            ..
+        } = app.state.overlay
+        {
+            assert!(command_preview.contains("daemons stop postgres"));
+        } else {
+            panic!("expected Confirm overlay for active daemon stop");
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "lazymise"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A Vim-first terminal workbench for mise"
@@ -13,6 +13,9 @@ ratatui = "0.30"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 unicode-width = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 pretty_assertions = "1.4"
