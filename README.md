@@ -1,5 +1,9 @@
 # lazymise
 
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 A Vim-first, lazygit-inspired terminal workbench for [`mise`](https://mise.jdx.dev/) — uniting **Tasks**, **Tools**, **Env**, **Config & Health**, and **Command Log & Jobs** in one non-blocking TUI deeply aligned with `mise`'s official roadmap.
 
 ## Layout Overview
@@ -53,8 +57,9 @@ On wide terminals (`>= 96` columns), `lazymise` renders a 5-panel workbench with
 - **Environment Governance**: Combines `mise env --redacted --json` with heuristic secret detection; masks sensitive values by default, reveals with `S` (auto-re-masks after 30s), warns when copying secrets, and edits via `mise set` / `mise unset`.
 - **Config Governance & Scaffolding**: Inline `mise config explain` diagnostics, structured `mise doctor` dashboard, searchable `mise settings`, experimental `[daemons]` & `[deps]` management, plus a unified `g` Generate & Scaffold modal covering all 7 official `mise generate` targets and custom `$MISE_TEMPLATES_DIR` / `~/.config/mise/templates` templates.
 - **Multi-Job Process Management & ANSI Rendering**: Unique `JobId` isolation, Unix process-group termination (`SIGTERM` → `SIGKILL` with cleanup on exit and quit-confirmation guard), `\r` progress overwrite, and zero-dependency 16/256/TrueColor ANSI SGR rendering.
-- **Zero-Memory-Burden Discovery & Full Mouse Support**: Single-source-of-truth keymap powering dynamic footer hints, searchable/executable `?` Help, contextual `x` Action Menu, and `:` / `Ctrl-p` Command Palette; click panels/sub-tabs/profile badge, double-click to trigger primary actions, and scroll any hovered pane directly with the mouse wheel.
-- **Accessible Terminal Aesthetics**: Transparent canvas, `NO_COLOR` / `CLICOLOR=0` / `TERM=dumb` and 256/16-color degradation, non-color redundant status glyphs, and `unicode-width`-safe CJK/Emoji truncation.
+- **Safe Version-Level Uninstall vs. Config Removal (`d`)**: In `[2] TOOLS`, pressing `d` on an inactive, unreferenced, or prunable version runs `mise uninstall <tool>@<version>` without touching `mise.toml`; pressing `d` on an active configured tool runs `mise unuse <tool>` with an explicit config-path confirmation prompt.
+- **Zero-Memory-Burden Discovery & Context-Aware 80/20 Footer**: Single-source-of-truth keymap powering a dynamic footer bar that adapts to the active panel, sub-view, and highlighted item (separating context actions and global shortcuts with `│` while preserving `x:menu ?:help q:quit` on narrow terminals), plus searchable/executable `?` Help, contextual `x` Action Menu, `:` / `Ctrl-p` Command Palette, and full mouse support (click panels/sub-tabs/profile badge, double-click primary actions, hover wheel scroll).
+- **Accessible Terminal Aesthetics**: Transparent canvas, `NO_COLOR` / `CLICOLOR=0` / `TERM=dumb` and 256/16-color degradation, non-color redundant status glyphs, compact filtered tool `OPTIONS` metadata, and `unicode-width`-safe CJK/Emoji truncation.
 
 ## Installation & Quick Start
 
@@ -139,7 +144,7 @@ All keybindings are defined in a single registry ([`src/app/keymap.rs`](src/app/
 | `u` | Upgrade selected tool (`mise upgrade <tool>`) |
 | `U` | Upgrade all outdated tools (`mise upgrade`) |
 | `V` | Upgrade vulnerable tools (`mise upgrade --vulnerable`) |
-| `d` | Remove tool from config (`mise unuse <tool>`) |
+| `d` | Uninstall selected inactive/old version (`mise uninstall <tool>@<ver>`) or remove active tool from config (`mise unuse <tool>`) |
 | `p` | Prune unused tool versions (`mise prune`) |
 | `L` | Preview `mise lock --dry-run` (apply `mise lock` via `x` menu) |
 | `A` | Run OSV.dev security audit (`mise audit --json`) |
@@ -193,7 +198,7 @@ All repeatable workflows are exposed via [`mise.toml`](mise.toml):
 ```bash
 mise tasks        # List all project tasks
 mise run dev      # Run lazymise in debug mode (cargo run)
-mise run check    # Run workspace hygiene (tidy) + tests + clippy (-D warnings)
+mise run check    # Run workspace hygiene (including EN/ZH README sync check) + tests + clippy (-D warnings)
 mise run install  # Build release binary and install to ~/.cargo/bin
 ```
 

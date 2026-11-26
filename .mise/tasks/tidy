@@ -67,6 +67,29 @@ done < <(
     -o -type f -print
 )
 
+# 5. Bilingual README sync check (README.md <-> README.zh-CN.md)
+if [ -f "README.md" ] || [ -f "README.zh-CN.md" ]; then
+  if [ ! -f "README.md" ] || [ ! -f "README.zh-CN.md" ]; then
+    report "bilingual README out of sync: both README.md and README.zh-CN.md must exist"
+  else
+    if ! grep -q "README.zh-CN.md" "README.md"; then
+      report "README.md missing language switcher link to README.zh-CN.md"
+    fi
+    if ! grep -q "README.md" "README.zh-CN.md"; then
+      report "README.zh-CN.md missing language switcher link to README.md"
+    fi
+    en_h2="$(grep -c '^## ' README.md || true)"
+    zh_h2="$(grep -c '^## ' README.zh-CN.md || true)"
+    en_h3="$(grep -c '^### ' README.md || true)"
+    zh_h3="$(grep -c '^### ' README.zh-CN.md || true)"
+    en_tbl="$(grep -c '^| ' README.md || true)"
+    zh_tbl="$(grep -c '^| ' README.zh-CN.md || true)"
+    if [ "$en_h2" != "$zh_h2" ] || [ "$en_h3" != "$zh_h3" ] || [ "$en_tbl" != "$zh_tbl" ]; then
+      report "README.md and README.zh-CN.md structure drift (H2: ${en_h2}/${zh_h2}, H3: ${en_h3}/${zh_h3}, tables: ${en_tbl}/${zh_tbl})"
+    fi
+  fi
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo "tidy: found $ERRORS issue(s)" >&2
   exit 1
