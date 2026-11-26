@@ -413,6 +413,18 @@ where
     })
 }
 
+fn deserialize_value_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let val = Option::<Value>::deserialize(deserializer)?;
+    Ok(match val {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(arr)) => arr,
+        Some(other) => vec![other],
+    })
+}
+
 /// Tool config source from `mise ls --json` / `mise outdated --json` / `mise tool --json`.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -445,11 +457,15 @@ pub struct ToolDetail {
     pub backend: Option<String>,
     pub description: Option<String>,
     pub url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
     pub installed_versions: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
     pub requested_versions: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
     pub active_versions: Vec<String>,
     pub config_source: Option<MiseToolSource>,
     pub tool_options: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_value_vec")]
     pub security: Vec<Value>,
 }
 
@@ -863,4 +879,31 @@ pub fn parse_settings_extended_json(raw: &str) -> Result<Vec<SettingEntry>> {
     flatten_settings("", &val, &mut entries);
     entries.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_detail_handles_null_version_and_security_arrays() {
+        let raw = r#"{
+            "backend": "aqua:Kitware/CMake",
+            "description": "Mirror of CMake upstream repository",
+            "url": null,
+            "installed_versions": ["4.4.5"],
+            "requested_versions": null,
+            "active_versions": null,
+            "config_source": null,
+            "tool_options": { "os": null },
+            "security": null
+        }"#;
+
+        let detail: ToolDetail = serde_json::from_str(raw).expect("ToolDetail should accept nulls");
+        assert_eq!(detail.backend.as_deref(), Some("aqua:Kitware/CMake"));
+        assert_eq!(detail.installed_versions, vec!["4.4.5"]);
+        assert!(detail.requested_versions.is_empty());
+        assert!(detail.active_versions.is_empty());
+        assert!(detail.security.is_empty());
+    }
 }

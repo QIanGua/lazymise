@@ -18,6 +18,17 @@ pub struct ToolRow {
     pub match_indices: Vec<usize>,
 }
 
+impl ToolRow {
+    /// Returns true when `d` on this row should uninstall only this installed version
+    /// (`mise uninstall <tool>@<version>`) instead of editing `mise.toml` (`mise unuse <tool>`).
+    pub fn should_uninstall_version_only(&self) -> bool {
+        self.entry.installed
+            && (self.entry.source.is_none()
+                || !self.entry.active
+                || self.entry.scheduled_for_pruning)
+    }
+}
+
 /// Real-time badge counters for the Tools panel.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ToolStats {

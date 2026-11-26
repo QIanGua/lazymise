@@ -641,19 +641,47 @@ pub fn apply_action(
         Action::ToolRemoveSelected => {
             if let Some(tool) = state.selected_tool() {
                 let name = tool.name.clone();
-                let args = vec!["unuse".into(), name.clone()];
-                let preview = state.format_mise_command(&args);
-                state.overlay = Overlay::Confirm {
-                    title: format!("Remove `{name}` from config"),
-                    detail: format!("Removes `{name}` from project mise.toml via `mise unuse`."),
-                    command_preview: preview,
-                    action: ConfirmAction::MiseCommand {
-                        args,
-                        foreground: true,
-                        reload_after: true,
-                        label: format!("unuse:{name}"),
-                    },
-                };
+                if tool.should_uninstall_version_only() {
+                    let spec = format!("{name}@{}", tool.entry.version);
+                    let args = vec!["uninstall".into(), spec.clone()];
+                    let preview = state.format_mise_command(&args);
+                    state.overlay = Overlay::Confirm {
+                        title: format!("Uninstall `{spec}`"),
+                        detail: format!(
+                            "Uninstalls only version `{}` of `{name}` without editing mise.toml.",
+                            tool.entry.version
+                        ),
+                        command_preview: preview,
+                        action: ConfirmAction::MiseCommand {
+                            args,
+                            foreground: true,
+                            reload_after: true,
+                            label: format!("uninstall:{spec}"),
+                        },
+                    };
+                } else {
+                    let args = vec!["unuse".into(), name.clone()];
+                    let preview = state.format_mise_command(&args);
+                    let source_hint = tool
+                        .entry
+                        .source
+                        .as_ref()
+                        .and_then(|s| s.path.as_deref())
+                        .unwrap_or("mise.toml");
+                    state.overlay = Overlay::Confirm {
+                        title: format!("Unuse `{name}` from config"),
+                        detail: format!(
+                            "Removes `{name}` from `{source_hint}` and uninstalls it via `mise unuse`."
+                        ),
+                        command_preview: preview,
+                        action: ConfirmAction::MiseCommand {
+                            args,
+                            foreground: true,
+                            reload_after: true,
+                            label: format!("unuse:{name}"),
+                        },
+                    };
+                }
             }
         }
         Action::ToolPrune => {

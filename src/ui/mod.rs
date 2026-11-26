@@ -12,7 +12,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::action::{FocusArea, Panel, ScreenMode};
-use crate::app::keymap::footer_hints_for_state;
+use crate::app::keymap::footer_hint_groups_for_state;
 use crate::app::state::{AppState, Overlay};
 use crate::ui::layout::{LayoutMap, compute_accordion_slots, compute_layout};
 use crate::ui::theme::glyphs;
@@ -298,7 +298,7 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
         return;
     }
 
-    let hints = footer_hints_for_state(state);
+    let (panel_hints, global_hints) = footer_hint_groups_for_state(state);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
@@ -318,13 +318,63 @@ fn render_footer(frame: &mut Frame, state: &AppState, area: Rect) {
         used += 1;
     }
 
-    for (k, label) in hints {
+    // Reserve room for essential global actions (`x:menu`, `?:help`, `q:quit`) on tighter viewports
+    // so panel hints never push discovery/exit keys completely off-screen.
+    let essential_global: Vec<(&'static str, &'static str)> = global_hints
+        .iter()
+        .copied()
+        .filter(|(k, _)| matches!(*k, "x" | "?" | "q"))
+        .collect();
+    let essential_w: usize = essential_global
+        .iter()
+        .map(|(k, label)| UnicodeWidthStr::width(format!("{k}:{label}  ").as_str()))
+        .sum::<usize>()
+        + if panel_hints.is_empty() || essential_global.is_empty() {
+            0
+        } else {
+            2 // "│ "
+        };
+    let panel_budget = max_w.saturating_sub(essential_w);
+
+    let mut rendered_panel = 0usize;
+    for (k, label) in &panel_hints {
+        let piece = format!("{k}:{label}  ");
+        let pw = UnicodeWidthStr::width(piece.as_str());
+        if used + pw > panel_budget && rendered_panel > 0 {
+            break;
+        }
+        if used + pw > max_w {
+            break;
+        }
+        spans.push(Span::styled(*k, theme::label()));
+        spans.push(Span::styled(format!(":{label}  "), theme::muted()));
+        used += pw;
+        rendered_panel += 1;
+    }
+
+    if rendered_panel > 0 && !global_hints.is_empty() && used + 2 <= max_w {
+        spans.push(Span::styled("│ ", theme::subtle()));
+        used += 2;
+    }
+
+    // Try rendering full global hints if they all fit; otherwise render essential global hints.
+    let full_global_w: usize = global_hints
+        .iter()
+        .map(|(k, label)| UnicodeWidthStr::width(format!("{k}:{label}  ").as_str()))
+        .sum();
+    let globals_to_draw = if used + full_global_w <= max_w {
+        &global_hints
+    } else {
+        &essential_global
+    };
+
+    for (k, label) in globals_to_draw {
         let piece = format!("{k}:{label}  ");
         let pw = UnicodeWidthStr::width(piece.as_str());
         if used + pw > max_w {
             break;
         }
-        spans.push(Span::styled(k, theme::label()));
+        spans.push(Span::styled(*k, theme::label()));
         spans.push(Span::styled(format!(":{label}  "), theme::muted()));
         used += pw;
     }

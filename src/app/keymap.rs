@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::action::{Action, ConfigSubView, FocusArea, Panel};
+use crate::action::{
+    Action, ConfigSubView, FocusArea, Panel, TaskSubView, ToolScope, ToolSubView,
+};
 use crate::app::state::{AppState, MenuItem};
 use crate::model::fuzzy::fuzzy_match;
 
@@ -340,8 +342,8 @@ pub fn all_bindings() -> Vec<KeyBinding> {
         },
         KeyBinding {
             key_display: "d",
-            label: "remove",
-            description: "Remove tool from config (`mise unuse <tool>`)",
+            label: "unuse/uninstall",
+            description: "Uninstall inactive/old version (`mise uninstall <tool>@<ver>`) or remove active tool from config (`mise unuse`)",
             scope: KeyScope::Panel(Panel::Tools),
             action: Action::ToolRemoveSelected,
             show_in_footer: false,
@@ -587,8 +589,272 @@ pub fn footer_hints(ctx: KeyContext) -> Vec<(&'static str, &'static str)> {
     panel_hints
 }
 
+pub type FooterHint = (&'static str, &'static str);
+
+/// Context-aware footer hint groups `(panel_hints, global_hints)` derived from `all_bindings()`.
+/// Follows the 80/20 rule: surfaces the most frequent actions for the active panel, sub-view,
+/// and currently highlighted item first, followed by essential global shortcuts.
+pub fn footer_hint_groups_for_state(state: &AppState) -> (Vec<FooterHint>, Vec<FooterHint>) {
+    let ctx = KeyContext::from_state(state);
+    let eff = ctx.effective_panel();
+    let bindings = all_bindings();
+
+    let lookup = |action: Action| -> Option<(&'static str, &'static str)> {
+        bindings
+            .iter()
+            .find(|b| {
+                b.action == action
+                    && (b.scope == KeyScope::Panel(eff) || b.scope == KeyScope::Global)
+            })
+            .map(|b| (b.key_display, b.label))
+    };
+
+    let mut panel_actions: Vec<Action> = Vec::new();
+    match eff {
+        Panel::Tasks => {
+            let is_group = state
+                .list_states
+                .tasks
+                .selected()
+                .and_then(|idx| state.task_rows.get(idx))
+                .is_some_and(|row| row.as_task().is_none());
+            if is_group {
+                panel_actions.extend([
+                    Action::TaskToggleFold,
+                    Action::TaskToggleHidden,
+                    Action::TaskToggleMonorepoAll,
+                    Action::TaskValidate,
+                ]);
+            } else {
+                panel_actions.push(Action::TaskRunForeground);
+                panel_actions.push(Action::TaskRunBackground);
+                if state.task_subview == TaskSubView::Output {
+                    panel_actions.push(Action::TaskToggleAutoFollow);
+                }
+                panel_actions.extend([
+                    Action::TaskRunWithArgs,
+                    Action::TaskRunForce,
+                    Action::TaskWatch,
+                    Action::TaskEditSource,
+                    Action::TaskCopyCommand,
+                ]);
+            }
+        }
+        Panel::Tools => {
+            let has_prunable = state.tools_vm.prunable_count() > 0;
+            let has_vulns = state
+                .tools_vm
+                .audit
+                .as_ref()
+                .is_some_and(|a| !a.vulnerabilities.is_empty());
+
+            match state.tool_subview {
+                ToolSubView::Outdated => {
+                    panel_actions.extend([
+                        Action::ToolUpgradeSelected,
+                        Action::ToolUpgradeAll,
+                        Action::ToolRefreshOutdated,
+                        Action::ToolRemoveSelected,
+                        Action::ToolOpenRegistry,
+                        Action::ToolCycleScope,
+                    ]);
+                }
+                ToolSubView::Audit => {
+                    panel_actions.push(Action::ToolRunAudit);
+                    if has_vulns {
+                        panel_actions.push(Action::ToolUpgradeVulnerable);
+                    }
+                    panel_actions.extend([
+                        Action::ToolUpgradeSelected,
+                        Action::ToolRemoveSelected,
+                        Action::ToolCycleScope,
+                    ]);
+                }
+                ToolSubView::Lock => {
+                    panel_actions.extend([
+                        Action::ToolLockPreview,
+                        Action::ToolInstallAll,
+                        Action::ToolUpgradeSelected,
+                        Action::ToolRemoveSelected,
+                        Action::ToolCycleScope,
+                    ]);
+                }
+                ToolSubView::Details => {
+                    if let Some(row) = state.selected_tool() {
+                        if !row.vulnerabilities.is_empty() {
+                            panel_actions.push(Action::ToolUpgradeVulnerable);
+                        }
+                        if !row.entry.installed {
+                            panel_actions.extend([
+                                Action::ToolInstallAll,
+                                Action::ToolRemoveSelected,
+                                Action::ToolOpenRegistry,
+                                Action::ToolEditSource,
+                                Action::ToolCycleScope,
+                            ]);
+                        } else if row.entry.scheduled_for_pruning
+                            || !row.entry.active
+                            || state.tool_scope == ToolScope::Prunable
+                        {
+                            panel_actions.extend([
+                                Action::ToolPrune,
+                                Action::ToolRemoveSelected,
+                                Action::ToolOpenRegistry,
+                                Action::ToolInstallAll,
+                                Action::ToolUpgradeSelected,
+                            ]);
+                            if row.entry.source.is_some() {
+                                panel_actions.push(Action::ToolEditSource);
+                            }
+                            panel_actions.push(Action::ToolCycleScope);
+                        } else {
+                            panel_actions.extend([
+                                Action::ToolUpgradeSelected,
+                                Action::ToolRemoveSelected,
+                                Action::ToolOpenRegistry,
+                                Action::ToolInstallAll,
+                                Action::ToolEditSource,
+                            ]);
+                            if has_prunable {
+                                panel_actions.push(Action::ToolPrune);
+                            }
+                            panel_actions.push(Action::ToolRunAudit);
+                            panel_actions.push(Action::ToolCycleScope);
+                        }
+                    } else {
+                        if has_prunable || state.tool_scope == ToolScope::Prunable {
+                            panel_actions.push(Action::ToolPrune);
+                        }
+                        panel_actions.extend([
+                            Action::ToolOpenRegistry,
+                            Action::ToolInstallAll,
+                            Action::ToolUpgradeSelected,
+                            Action::ToolCycleScope,
+                        ]);
+                    }
+                }
+            }
+        }
+        Panel::Env => {
+            if let Some(row) = state.selected_env() {
+                if row.sensitive {
+                    panel_actions.extend([
+                        Action::EnvToggleReveal,
+                        Action::EnvAddOrEdit,
+                        Action::EnvUnset,
+                        Action::EnvAddNew,
+                        Action::EnvCopyValue,
+                        Action::EnvCycleFilter,
+                    ]);
+                } else {
+                    panel_actions.extend([
+                        Action::EnvAddOrEdit,
+                        Action::EnvUnset,
+                        Action::EnvAddNew,
+                        Action::EnvCopyValue,
+                        Action::EnvCopyPair,
+                        Action::EnvCycleFilter,
+                    ]);
+                }
+            } else {
+                panel_actions.extend([
+                    Action::EnvAddNew,
+                    Action::EnvToggleReveal,
+                    Action::EnvCycleFilter,
+                ]);
+            }
+        }
+        Panel::Config => match state.config_subview {
+            ConfigSubView::Services => {
+                panel_actions.extend([
+                    Action::DaemonToggleSelected,
+                    Action::DepsSync,
+                    Action::ConfigEditSelected,
+                    Action::ConfigRefreshDoctor,
+                    Action::ConfigOpenGenerate,
+                ]);
+            }
+            ConfigSubView::Doctor => {
+                panel_actions.extend([
+                    Action::ConfigRefreshDoctor,
+                    Action::ConfigEditSelected,
+                    Action::ConfigToggleTrust,
+                    Action::ConfigFormat,
+                    Action::ConfigOpenGenerate,
+                ]);
+            }
+            ConfigSubView::File | ConfigSubView::Settings => {
+                panel_actions.extend([
+                    Action::ConfigEditSelected,
+                    Action::ConfigToggleTrust,
+                    Action::ConfigFormat,
+                    Action::ConfigRefreshDoctor,
+                    Action::ConfigOpenGenerate,
+                ]);
+            }
+        },
+        Panel::Jobs => {
+            let is_running = state
+                .selected_job_record()
+                .is_some_and(|j| j.status.is_running());
+            if is_running {
+                panel_actions.extend([
+                    Action::JobKillSelected,
+                    Action::JobInspect,
+                    Action::JobToggleAutoFollow,
+                    Action::JobCopyCommand,
+                    Action::ToggleInternalCommands,
+                ]);
+            } else {
+                panel_actions.extend([
+                    Action::JobInspect,
+                    Action::RerunLastTask,
+                    Action::JobCopyCommand,
+                    Action::JobClearFinished,
+                    Action::ToggleInternalCommands,
+                    Action::JobToggleAutoFollow,
+                ]);
+            }
+        }
+    }
+
+    let mut panel_hints: Vec<(&'static str, &'static str)> = Vec::new();
+    for action in panel_actions {
+        let is_tool_remove = action == Action::ToolRemoveSelected;
+        if let Some(mut hint) = lookup(action) {
+            if is_tool_remove {
+                hint.1 = if state
+                    .selected_tool()
+                    .is_some_and(|t| t.should_uninstall_version_only())
+                {
+                    "uninstall"
+                } else {
+                    "unuse"
+                };
+            }
+            if !panel_hints.contains(&hint) {
+                panel_hints.push(hint);
+            }
+        }
+    }
+
+    let mut global_hints: Vec<(&'static str, &'static str)> = Vec::new();
+    for b in &bindings {
+        if b.show_in_footer && b.scope == KeyScope::Global {
+            let hint = (b.key_display, b.label);
+            if !panel_hints.contains(&hint) && !global_hints.contains(&hint) {
+                global_hints.push(hint);
+            }
+        }
+    }
+
+    (panel_hints, global_hints)
+}
+
 pub fn footer_hints_for_state(state: &AppState) -> Vec<(&'static str, &'static str)> {
-    footer_hints(KeyContext::from_state(state))
+    let (mut panel_hints, global_hints) = footer_hint_groups_for_state(state);
+    panel_hints.extend(global_hints);
+    panel_hints
 }
 
 /// Return keybindings ordered with the current panel first, then global, then other panels,
@@ -780,14 +1046,29 @@ pub fn context_menu_items(state: &AppState) -> Vec<MenuItem> {
                         state.format_mise_command(&["upgrade".into(), "--vulnerable".into()]),
                     ),
                 },
-                MenuItem {
-                    key_hint: "d".into(),
-                    label: format!("Remove `{tool_name}` (`unuse`)"),
-                    description: "Remove tool from project mise.toml".into(),
-                    action: Action::ToolRemoveSelected,
-                    command_preview: Some(
-                        state.format_mise_command(&["unuse".into(), tool_name]),
-                    ),
+                if let Some(sel) = state.selected_tool()
+                    && sel.should_uninstall_version_only()
+                {
+                    let spec = format!("{}@{}", sel.name, sel.entry.version);
+                    MenuItem {
+                        key_hint: "d".into(),
+                        label: format!("Uninstall `{spec}` (version only)"),
+                        description: "Uninstall this version without editing mise.toml".into(),
+                        action: Action::ToolRemoveSelected,
+                        command_preview: Some(
+                            state.format_mise_command(&["uninstall".into(), spec]),
+                        ),
+                    }
+                } else {
+                    MenuItem {
+                        key_hint: "d".into(),
+                        label: format!("Unuse `{tool_name}` from config"),
+                        description: "Remove tool from mise.toml and uninstall it".into(),
+                        action: Action::ToolRemoveSelected,
+                        command_preview: Some(
+                            state.format_mise_command(&["unuse".into(), tool_name]),
+                        ),
+                    }
                 },
                 MenuItem {
                     key_hint: "p".into(),
@@ -1471,5 +1752,75 @@ mod tests {
 
         let palette = palette_items(&state, "doctor");
         assert!(palette.iter().any(|m| m.action == Action::ConfigRefreshDoctor));
+    }
+
+    #[test]
+    fn footer_hints_adapt_to_selected_tool_state_and_subview() {
+        use crate::mise::schema::{MiseToolEntry, MiseToolSource};
+        use crate::model::tools::ToolRow;
+
+        let mut state = AppState::new(PathBuf::from("/tmp/repo"), None, Panel::Tools);
+        state.tools_vm.rows = vec![
+            ToolRow {
+                name: "julia".into(),
+                entry: MiseToolEntry {
+                    version: "1.11.9".into(),
+                    requested_version: None,
+                    install_path: None,
+                    source: None,
+                    installed: true,
+                    active: false,
+                    scheduled_for_pruning: true,
+                    prune_after: None,
+                },
+                outdated: None,
+                vulnerabilities: Vec::new(),
+                is_project_local: false,
+                match_indices: Vec::new(),
+            },
+            ToolRow {
+                name: "rust".into(),
+                entry: MiseToolEntry {
+                    version: "1.96.0".into(),
+                    requested_version: Some("stable".into()),
+                    install_path: None,
+                    source: Some(MiseToolSource {
+                        kind: Some("mise.toml".into()),
+                        path: Some("/tmp/repo/mise.toml".into()),
+                    }),
+                    installed: true,
+                    active: true,
+                    scheduled_for_pruning: false,
+                    prune_after: None,
+                },
+                outdated: None,
+                vulnerabilities: Vec::new(),
+                is_project_local: true,
+                match_indices: Vec::new(),
+            },
+        ];
+
+        // Selecting prunable/inactive tool surfaces `p:prune` first, followed by `d:uninstall`
+        state.list_states.tools.select(Some(0));
+        let hints_prunable = footer_hints_for_state(&state);
+        assert_eq!(hints_prunable.first(), Some(&("p", "prune")));
+        assert_eq!(hints_prunable.get(1), Some(&("d", "uninstall")));
+
+        // Moving to active configured tool surfaces `u:upgrade` first, then `d:unuse` and `e:edit`
+        state.list_states.tools.select(Some(1));
+        let hints_active = footer_hints_for_state(&state);
+        assert_eq!(hints_active.first(), Some(&("u", "upgrade")));
+        assert_eq!(hints_active.get(1), Some(&("d", "unuse")));
+        assert!(hints_active.iter().any(|(k, _)| *k == "e"));
+
+        // Switching to Audit sub-view surfaces `A:audit`
+        state.tool_subview = ToolSubView::Audit;
+        let hints_audit = footer_hints_for_state(&state);
+        assert_eq!(hints_audit.first(), Some(&("A", "audit")));
+
+        // Switching to Lock sub-view surfaces `L:lock`
+        state.tool_subview = ToolSubView::Lock;
+        let hints_lock = footer_hints_for_state(&state);
+        assert_eq!(hints_lock.first(), Some(&("L", "lock")));
     }
 }

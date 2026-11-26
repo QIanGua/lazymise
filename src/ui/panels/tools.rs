@@ -486,7 +486,7 @@ fn build_details_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
         if let Some(opts) = &detail.tool_options
             && !opts.is_null()
         {
-            lines.push(kv_line("OPTIONS", opts.to_string(), theme::muted()));
+            lines.extend(format_tool_options_lines(opts, width));
         }
     } else if state.loading_domains.contains(&Domain::ToolDetail) {
         lines.push(Line::from(Span::styled(
@@ -707,6 +707,61 @@ fn build_lock_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
             theme::muted(),
         ),
     ]));
+    lines
+}
+
+fn format_tool_options_lines(opts: &serde_json::Value, width: usize) -> Vec<Line<'static>> {
+    let Some(map) = opts.as_object() else {
+        let s = truncate_display(&opts.to_string(), width.saturating_sub(14).max(20));
+        return vec![kv_line("OPTIONS", s, theme::muted())];
+    };
+
+    let entries: Vec<(&String, &serde_json::Value)> = map
+        .iter()
+        .filter(|(_, v)| match v {
+            serde_json::Value::Null => false,
+            serde_json::Value::Array(a) => !a.is_empty(),
+            serde_json::Value::Object(o) => !o.is_empty(),
+            serde_json::Value::String(s) => !s.is_empty(),
+            _ => true,
+        })
+        .collect();
+
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec![kv_line(
+        "OPTIONS",
+        format!("{} active setting(s)", entries.len()),
+        theme::muted(),
+    )];
+    let max_val = width.saturating_sub(24).max(24);
+    for (k, v) in entries {
+        let formatted = match v {
+            serde_json::Value::String(s) => truncate_display(s, max_val),
+            serde_json::Value::Array(arr) => {
+                let joined = arr
+                    .iter()
+                    .map(|item| match item {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                truncate_display(&joined, max_val)
+            }
+            serde_json::Value::Object(obj) => {
+                let keys = obj.keys().cloned().collect::<Vec<_>>().join(", ");
+                truncate_display(&format!("{{{keys}}}"), max_val)
+            }
+            other => truncate_display(&other.to_string(), max_val),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {k}: "), theme::subtle()),
+            Span::styled(formatted, theme::muted()),
+        ]));
+    }
     lines
 }
 
